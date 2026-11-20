@@ -198,29 +198,24 @@ class ChannelQuality:
         return {name: int(c[k]) for k, name in enumerate(CLASSES)}
 
     def overall(self) -> str | None:
-        """Overall class for the whole recording; ``None`` with no whole epoch to judge."""
+        """Overall class for the whole recording; ``None`` with no whole epoch to judge.
+
+        It follows from the per-epoch classes: ``railed`` or ``flat`` only when every epoch is
+        railed or every epoch is flat; ``suspect`` when more than 10 % of epochs are not ok or
+        more than 1 % of all samples sit on the channel's extremes; otherwise ``ok``.
+        """
         n = self.n_epochs
         if n == 0:
             return None
-        sat = self._cat("saturated").astype(bool)
-        flat = self._cat("flat").astype(bool)
-        run = self._cat("constant_run").astype(bool)
+        counts = self.counts()
+        if counts["railed"] == n:
+            return "railed"
+        if counts["flat"] == n:
+            return "flat"
         ext = self._cat("extreme_count")
-        ext_ep = ext / self.samples_per_epoch
-        all_flat = bool(flat.all())
-        level = abs(float(np.median(self._cat("level"))))
         has_range = self.hi > self.lo
         ext_total = float(ext.sum()) / (n * self.samples_per_epoch) if has_range else 1.0
-        if bool((sat | run).all()) and not all_flat:
-            return "railed"
-        if all_flat and level >= RAIL_LEVEL_UV:
-            return "railed"
-        if self.hi > self.lo and bool((ext_ep >= RAILED_EXTREME_FRAC).all()):
-            return "railed"
-        if all_flat:
-            return "flat"
-        not_ok = self.classes != OK
-        if ext_total > SUSPECT_EXTREME_FRAC or not_ok.sum() / n > SUSPECT_BAD_EPOCH_FRAC:
+        if ext_total > SUSPECT_EXTREME_FRAC or (n - counts["ok"]) / n > SUSPECT_BAD_EPOCH_FRAC:
             return "suspect"
         return "ok"
 

@@ -81,6 +81,16 @@ def _delim(line: str) -> str | None:
 
 def parse_hypnogram(text: str, name: str = "the hypnogram") -> np.ndarray:
     """Stage codes (0=W 1=N1 2=N2 3=N3 4=R, -1 unscored), one per epoch."""
+    return read_hypnogram(text, name)[0]
+
+
+def read_hypnogram(text: str, name: str = "the hypnogram") -> tuple[np.ndarray, str]:
+    """Stage codes as :func:`parse_hypnogram` gives them, and how the first column was read.
+
+    The reading is ``"stage"`` (the first column is the stage), ``"epoch_index"`` (epoch
+    numbers), ``"onset_seconds"`` (headerless onset times; rows taken in order) or
+    ``"ignored"`` (a header names it something else; rows taken in order).
+    """
     lines = [(n + 1, ln.rstrip("\r")) for n, ln in enumerate(text.split("\n"))]
     lines = [(n, ln) for n, ln in lines if not ln.lstrip().startswith("#")]
     while lines and not lines[-1][1].strip():
@@ -93,6 +103,7 @@ def parse_hypnogram(text: str, name: str = "the hypnogram") -> np.ndarray:
 
     raw: list[tuple[int, str]] = []  # (line number, stage token)
     epochs: list[int] | None = None
+    first_column = "stage"
     if d is None:
         first = True
         for n, ln in lines:
@@ -113,6 +124,8 @@ def parse_hypnogram(text: str, name: str = "the hypnogram") -> np.ndarray:
         if any(h in _STAGE_HEADERS for h in head):
             stage_col = next(i for i, h in enumerate(head) if h in _STAGE_HEADERS)
             epoch_col = next((i for i, h in enumerate(head) if h in _EPOCH_HEADERS), None)
+            if stage_col != 0:
+                first_column = "epoch_index" if epoch_col == 0 else "ignored"
             rows = rows[1:]
         elif any(_non_finite(c) and not _stage_ok(c) for c in rows[0][1]):
             raise LocalToolError(
@@ -130,6 +143,7 @@ def parse_hypnogram(text: str, name: str = "the hypnogram") -> np.ndarray:
                 len(r) > 0 and _is_int(r[0].strip()) for _, r in rows if any(c for c in r)
             ):
                 epoch_col = None if _onset_seconds(rows) else 0
+                first_column = "epoch_index" if epoch_col == 0 else "onset_seconds"
         epochs = [] if epoch_col is not None else None
         for n, r in rows:
             if len(r) <= stage_col:
@@ -193,10 +207,10 @@ def parse_hypnogram(text: str, name: str = "the hypnogram") -> np.ndarray:
             raise LocalToolError(f"The epoch numbers in {name} are out of range.")
         out = np.full(max(epochs) - base + 1, _UNSCORED, dtype=int)
         out[np.asarray(epochs) - base] = codes
-        return out
+        return out, first_column
     if len(codes) > MAX_EPOCHS:
         raise LocalToolError(f"{name} has more than {MAX_EPOCHS} epochs.")
-    return np.asarray(codes, dtype=int)
+    return np.asarray(codes, dtype=int), first_column
 
 
 def _onset_seconds(rows: list[tuple[int, list[str]]]) -> bool:

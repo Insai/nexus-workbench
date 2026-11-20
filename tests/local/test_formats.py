@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from nexus_workbench.local.errors import LocalToolError
-from nexus_workbench.local.formats import parse_events, parse_hypnogram
+from nexus_workbench.local.formats import parse_events, parse_hypnogram, read_hypnogram
 
 
 @pytest.mark.parametrize(
@@ -117,6 +117,25 @@ def test_headerless_onset_seconds_are_read_in_order() -> None:
     # Epoch numbers with gaps that are not a constant step are still epoch numbers.
     assert parse_hypnogram("0,W\n2,N2\n").tolist() == [0, -1, 2]
     assert parse_hypnogram("1,W\n2,N2\n3,N3\n").tolist() == [0, 2, 3]
+
+
+@pytest.mark.parametrize(
+    ("text", "first_column"),
+    [
+        ("W\nN1\nN2\n", "stage"),
+        ("W N1 N2\n", "stage"),
+        ("stage,epoch\nW,0\nN1,1\n", "stage"),
+        ("0,W\n1,N1\n2,N2\n", "epoch_index"),
+        ("0,W\n2,N2\n", "epoch_index"),
+        ("epoch,stage\n0,W\n30,W\n", "epoch_index"),
+        ("0,W\n30,N1\n60,N2\n", "onset_seconds"),
+        ("onset_sec,stage\n0,W\n30,N1\n60,N2\n", "ignored"),
+    ],
+)
+def test_hypnogram_says_how_its_first_column_was_read(text: str, first_column: str) -> None:
+    codes, how = read_hypnogram(text)
+    assert how == first_column
+    assert codes.tolist() == parse_hypnogram(text).tolist()
 
 
 @pytest.mark.parametrize(

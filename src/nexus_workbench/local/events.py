@@ -56,7 +56,8 @@ def _overlaps(p: Event, t: Event, tol: float, min_overlap: float) -> bool:
     b0, b1 = t.onset_sec, t.end_sec
     length = min(a1, b1) - max(a0, b0)
     if min_overlap > 0:
-        return length >= min_overlap
+        # End minus onset can round a hair below the duration, so allow for float rounding.
+        return length >= min_overlap - 1e-9
     if length > 0:
         return True
     # A zero-length event touching or inside the other one counts as overlapping.

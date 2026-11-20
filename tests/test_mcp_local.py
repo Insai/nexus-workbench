@@ -114,6 +114,7 @@ def test_local_results_carry_the_planted_findings(night: dict[str, Any]) -> None
     assert [b["name"] for b in power["bands"]] == ["delta", "theta", "alpha", "sigma", "beta"]
     assert set(power["channels"][0]["byStage"]) == {"W", "N1", "N2", "N3", "R"}
     assert out["compare_hypnograms"]["epochsUnscored"] == night["planted"]["unscoredEpochsB"]
+    assert out["compare_hypnograms"]["firstColumn"] == {"a": "epoch_index", "b": "stage"}
     events = out["compare_events"]
     assert events["matched"] == night["planted"]["events"]["matched"]
     assert events["shuffledNull"]["nShuffles"] == 20
@@ -218,8 +219,8 @@ def test_names_are_plain_data_fields(api: FakeAPI) -> None:
 
 #: The bounds docs/tools.md states for one local tool call: one copy of the result, and the
 #: text copy plus the structured copy.
-MCP_BOUND = 55_000
-MCP_BOUND_BOTH = 110_000
+MCP_BOUND = 65_000
+MCP_BOUND_BOTH = 130_000
 
 
 def test_widest_band_power_call_stays_under_the_documented_bound(tmp_path: Path) -> None:

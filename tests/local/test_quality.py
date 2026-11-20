@@ -164,6 +164,23 @@ def test_overall_is_never_ok_when_no_epoch_is_ok() -> None:
     assert r["overall"] == "suspect"
 
 
+def test_overall_follows_the_epoch_counts() -> None:
+    """A 1 s constant run (not at a rail level) in every epoch makes every epoch suspect, so
+    the channel is suspect overall, not railed: flat and railed overall need every epoch so."""
+    x = _eeg()
+    for k in range(N_EP):
+        x[k * SPE + 1000 : k * SPE + 1000 + int(FS)] = 5.0
+    r = assess(x, FS)
+    assert r["counts"] == {"ok": 0, "suspect": N_EP, "flat": 0, "railed": 0}
+    assert r["overall"] == "suspect"
+    # A dead channel held at a rail level in most epochs and at a low level in the others is
+    # neither flat nor railed throughout.
+    levels = [3700.0] * 6 + [10.0] * 3 + [5.0]
+    m = assess(np.concatenate([np.full(SPE, v) for v in levels]), FS)
+    assert m["counts"] == {"ok": 0, "suspect": 0, "flat": 3, "railed": 7}
+    assert m["overall"] == "suspect"
+
+
 def _ecg(fs: int, seconds: int, seed: int = 0) -> np.ndarray:
     """A synthetic ECG: 2.5 mV R peaks at 60 beats per minute on small noise."""
     rng = np.random.default_rng(seed)

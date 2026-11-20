@@ -36,8 +36,9 @@ come from misaligned files, not from the scorers, so check alignment first.
    whose first column is onset seconds (0, 30, 60, ...) is read in order as consecutive
    epochs; the times do not place the rows. A first column that skips a step is read as
    epoch numbers instead, which can make the file far longer than the night. After the
-   call, check that `epochsTotal` equals the recording's `durationSec / epoch_sec` before
-   trusting the result. If it does not, stop and ask.
+   call, `firstColumn` says how each file's first column was read; check it matches what
+   the file holds, and that `epochsTotal` equals the recording's `durationSec / epoch_sec`
+   before trusting the result. If either does not, stop and ask.
 6. A shift by one or more epochs shows as confusion spread along stage transitions and
    kappa well below what the per-stage minutes suggest. If you suspect a shift, stop and
    ask. A shifted copy is a new file the researcher should make and name.
@@ -58,6 +59,7 @@ come from misaligned files, not from the scorers, so check alignment first.
 | `perStage` | For `W`, `N1`, `N2`, `N3`, `R`: `precision`, `recall`, `f1`, `epochsA`, `epochsB`, `agreed`. A rate with a zero denominator is `null`. |
 | `confusion` | `rows` is `a`, `columns` is `b`, `labels` gives the order, `matrix` the counts. |
 | `stageMinutes` | Minutes per stage for each side, including `unscored`. |
+| `firstColumn` | How each file's first column was read, for `a` and `b`: `stage`, `epoch_index`, `onset_seconds` (rows taken in order) or `ignored` (a header named another column; rows taken in order). |
 
 ## Reporting rules
 

@@ -20,7 +20,7 @@ from . import staging
 from .edf import EdfFile, Header
 from .errors import LocalToolError
 from .events import Event, MatchTooLong, score_events, shuffled_null
-from .formats import parse_events, parse_hypnogram
+from .formats import parse_events, parse_hypnogram, read_hypnogram
 from .labels import guess_type, safe_label, safe_unit, to_microvolts
 from .report import content_id, display_name, json_safe, pct, read_text_file, rnd, sig
 
@@ -39,7 +39,7 @@ MAX_SKIPPED = 20
 MAX_MATCH_WORK = 2_000_000
 #: Matching work summed over all shuffles is kept under this, so the null stays quick whatever
 #: the events look like.
-MAX_SHUFFLE_WORK = 2_000_000
+MAX_SHUFFLE_WORK = 10_000_000
 MAX_SHUFFLES = 2000
 #: The end of the message for a recording shorter than one epoch (the CLI swaps it for its own).
 SHORT_FILE_HINT = "Use a shorter epoch_sec or a longer recording."
@@ -480,8 +480,8 @@ def compare_hypnograms(path_a: str, path_b: str, epoch_sec: float = 30.0) -> dic
     ep = _epoch_sec(epoch_sec)
     text_a, id_a = read_text_file(path_a, "hypnogram")
     text_b, id_b = read_text_file(path_b, "hypnogram")
-    a = parse_hypnogram(text_a, display_name(path_a))
-    b = parse_hypnogram(text_b, display_name(path_b))
+    a, first_a = read_hypnogram(text_a, display_name(path_a))
+    b, first_b = read_hypnogram(text_b, display_name(path_b))
     if len(a) != len(b):
         raise LocalToolError(
             f"The hypnograms differ in length: {display_name(path_a)} has {len(a)} epochs and "
@@ -526,6 +526,7 @@ def compare_hypnograms(path_a: str, path_b: str, epoch_sec: float = 30.0) -> dic
                 "matrix": res["confusion"],
             },
             "stageMinutes": {"a": minutes(a), "b": minutes(b)},
+            "firstColumn": {"a": first_a, "b": first_b},
         }
     )
 
@@ -590,7 +591,7 @@ def compare_events(
         late = sum(1 for e in ref + cand if e.onset_sec >= end)
         if late:
             raise LocalToolError(
-                f"{late} event(s) start after the end of a {hours:g} h recording. Check "
+                f"{late} event(s) start at or after the end of a {hours:g} h recording. Check "
                 "recording_hours and that onsets are in seconds from the start."
             )
     kw: dict[str, object] = {"tolerance_sec": tol, "min_overlap_sec": mo}

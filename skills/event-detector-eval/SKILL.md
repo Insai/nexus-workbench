@@ -95,8 +95,8 @@ report all of them, not the best one.
 ## Stop and ask the researcher
 
 - The thresholds were not agreed before the first call.
-- An event starts after `recording_hours` (the tool raises an error), or the two files may
-  use different time origins.
+- An event starts at or after `recording_hours` (the tool raises an error), or the two
+  files may use different time origins.
 - The tool refuses with "Matching these events would take too long". Many reference events
   lie close to candidates without overlapping them by `min_overlap`. The message suggests
   a lower `min_overlap` or `tolerance_sec`, or one label at a time; those are settings

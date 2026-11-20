@@ -137,11 +137,14 @@ percentages change but every channel stays `ok` overall.
 
 - `usablePercent`: `ok` epochs over all epochs of all checked channels.
 - `allChannelsOkPercent`: epochs in which every checked channel is `ok`.
-- `overall`: one class for the channel over the whole recording. `railed` or `flat` mean
-  railed or flat throughout; `suspect` means more than 10 % of epochs are classed anything
-  but `ok`, or more than 1 % of all samples sit on the channel's extremes; otherwise `ok`. A
-  channel can be `ok` overall and still have some bad epochs, but never when none of its
-  epochs is `ok`.
+- `overall`: one class for the channel over the whole recording, from the per-epoch
+  classes. `railed` means every epoch is `railed`, `flat` that every epoch is `flat`.
+  Otherwise `suspect` means more than 10 % of epochs are classed anything but `ok` (whatever
+  their class), or more than 1 % of all samples sit on the channel's extremes; otherwise
+  `ok`. So `railed` and `flat` overall never appear with a zero count for that class, and a
+  channel can be `suspect` overall with no `suspect` epoch (for example when 30 % of its
+  epochs are `railed`). A channel can be `ok` overall and still have some bad epochs, but
+  never when none of its epochs is `ok`.
 - `skipped`: chosen channels whose unit is not a voltage, with the reason (at most 20 listed;
   `truncated` is `true` when more were skipped).
 - `badSpans`: runs of consecutive epochs with the same non-ok class, longest first.
@@ -311,9 +314,16 @@ Output:
   "stageMinutes": {
     "a": {"W": 20.0, "N1": 18.0, "N2": 313.0, "N3": 44.0, "R": 85.0, "unscored": 0.0},
     "b": {"W": 14.0, "N1": 58.0, "N2": 273.5, "N3": 62.0, "R": 71.5, "unscored": 1.0}
-  }
+  },
+  "firstColumn": {"a": "epoch_index", "b": "stage"}
 }
 ```
+
+- `firstColumn` says how each file's first column was read (see the hypnogram format
+  below): `stage` (the first column is the stage), `epoch_index` (epoch numbers),
+  `onset_seconds` (a headerless column of onset times; the rows are taken in order) or
+  `ignored` (a header names it something other than `epoch` or a stage name; the rows are
+  taken in order). Check it against what the file holds.
 
 Method. An epoch unscored in either hypnogram is left out of every number. Agreement is the
 share of compared epochs with the same stage. Kappa is (observed agreement minus chance
@@ -335,14 +345,15 @@ get by chance from events with the same count and durations at unrelated times.
 Arguments:
 
 - `reference_path`, `candidate_path` (text): two event files (format below).
-- `min_overlap` (number, default 0): the shortest overlap, in seconds, that counts as a
-  match. 0 means any overlap.
-- `recording_hours` (number, optional): the recording length. Needed for false positives
-  per hour, and used as the span of the shuffled null.
+- `min_overlap` (number, default 0, 0 to 3600): the shortest overlap, in seconds, that
+  counts as a match. 0 means any overlap.
+- `recording_hours` (number, optional, more than 0 and at most 1000): the recording length.
+  Needed for false positives per hour, and used as the span of the shuffled null.
 - `n_shuffles` (integer, default 200, 0 to 2000): shuffles for the null.
-- `seed` (integer, default 0): seed for the null. Same seed, same null.
-- `tolerance_sec` (number, default 0): widens each candidate by this much on both sides
-  before overlap is measured. Use it for zero-length events or when onsets are imprecise.
+- `seed` (integer, default 0, 0 or more): seed for the null. Same seed, same null.
+- `tolerance_sec` (number, default 0, 0 to 3600): widens each candidate by this much on both
+  sides before overlap is measured. Use it for zero-length events or when onsets are
+  imprecise.
 - `label` (text, optional): compare only events with this label (case is ignored).
 
 Output:
@@ -392,10 +403,12 @@ Limits: at most 200,000 events per file. The matching work (event positions exam
 capped at 2,000,000 for the match itself: past it the call is refused with a plain message.
 That only happens when many reference events lie close to candidates without overlapping them
 by `min_overlap`. To keep the null quick, the matching work summed over all shuffles is kept
-under 2,000,000 as well. Shuffles stop before that bound would be passed; when fewer than
-`n_shuffles` ran, `reduced` is `true` and `nShuffles` says how many ran (it can be 0, with
-`null` means, when even one shuffle would pass the bound). An event that starts
-after `recording_hours` is an error.
+under 10,000,000. That is enough for the default 200 shuffles on an ordinary night of a few
+thousand events a file; with many more events, a wide `tolerance_sec` or a large
+`n_shuffles`, shuffles stop before that bound would be passed. When fewer than `n_shuffles`
+ran, `reduced` is `true` and `nShuffles` says how many ran (it can be 0, with `null` means,
+when even one shuffle would pass the bound). An event that starts at or after
+`recording_hours` is an error.
 
 ## File formats
 
@@ -467,15 +480,17 @@ Or JSON: a list of objects with the same keys, or an object with an `events` lis
 - `check_signal_quality` reads the data twice (once for each channel's range, once to
   classify), `compute_band_power` twice, and every EDF tool reads the whole file once more to
   compute `recordingId`. Time grows with file size.
-- Through the MCP server a result comes back twice: as structured content and as a text copy
-  of the same JSON, written compactly (no indentation). Each copy stays under 55,000
-  characters (about 14,000 tokens at about 4 characters per token), so both together stay
-  under 110,000 characters (about 28,000 tokens). The largest is `compute_band_power` at its
-  caps: 32 channels, a hypnogram and 8 bands. Measured on a 12 hour, 32 channel file with a
-  hypnogram and 8 custom bands, one copy is about 32,000 characters; the bound allows for
-  the longest labels and numbers and 20 skipped channels. The default 5 bands give about
-  24,000 characters. Every other tool's result is much smaller. The caps are stated in each
-  section.
+- Through the MCP server every tool's result, workspace and local alike, comes back twice:
+  as structured content and as a text copy of the same JSON, written compactly (no
+  indentation). Both copies carry the same keys and values. For the local tools each copy
+  stays under 65,000 characters (about 16,000 tokens at about 4 characters per token), so
+  both together stay under 130,000 characters (about 33,000 tokens). The largest is
+  `compute_band_power` at its caps: 32 channels, a hypnogram and 8 bands. Measured on a 12
+  hour, 32 channel file with a hypnogram and 8 custom bands, one copy is about 32,000
+  characters; the bound allows for the longest labels and numbers (an absolute power near
+  10^15 prints as 18 characters) and 20 skipped channels. The default 5 bands give about
+  24,000 characters. Every other local tool's result is much smaller. The caps are stated in
+  each section.
 - Supported: 16-bit EDF and EDF+C (continuous). EDF+D (discontinuous) files can be described
   with `inspect_edf` but are not supported yet by `check_signal_quality` and
   `compute_band_power`, which refuse them. Not supported: 24-bit BDF.

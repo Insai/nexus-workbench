@@ -131,6 +131,146 @@ def test_calls_each_tool(api: FakeAPI) -> None:
     assert {"action": "list_recordings", "projectId": "p_1", "limit": 50} in bodies
 
 
+def test_long_server_strings_and_keys_are_capped(api: FakeAPI) -> None:
+    long = "x" * 5000
+    whole = "y" * 1000  # longer than the cap, short enough to send back as an argument
+    row = {
+        **api.recordings[1],
+        "id": whole,
+        "projectId": whole,
+        "url": "https://workbench.test.invalid/r/" + whole,
+        "device": long,
+        "qualityGrade": long,
+        "addedAt": long,
+    }
+    api.recordings = [row]
+    api.details = {
+        whole: {
+            **row,
+            "channels": {"count": 1, "types": {long: 1}, "labels": [long]},
+            "stageMinutes": {long: 1.0},
+            "eventCounts": {long: 2},
+            "humanCounts": {long: 3},
+        }
+    }
+    server = server_for(api, api.add_token())
+
+    async def go() -> Any:
+        async with Client(server, mode="legacy") as client:
+            page = await client.call_tool("list_recordings", {})
+            return page, await client.call_tool("get_recording", {"id": whole})
+
+    page, rec = run(go)
+    got = page.structured_content["recordings"][0]
+    assert got["id"] == whole and got["projectId"] == whole
+    assert got["url"].endswith(whole)
+    assert got["device"] == "x" * 200
+    assert got["qualityGrade"] == "x" * 200
+    assert got["addedAt"] == "x" * 200
+    detail = rec.structured_content
+    assert detail["id"] == whole
+    assert detail["channels"]["types"] == {"x" * 200: 1}
+    assert detail["channels"]["labels"] == ["x" * 200]
+    assert detail["stageMinutes"] == {"x" * 200: 1.0}
+    assert detail["eventCounts"] == {"x" * 200: 2}
+    assert detail["humanCounts"] == {"x" * 200: 3}
+    for result in (page, rec):
+        assert max(len(t) for t in _strings(result.structured_content)) <= len(row["url"])
+
+
+def _strings(value: Any) -> list[str]:
+    if isinstance(value, dict):
+        return [s for k, v in value.items() for s in [k, *_strings(v)]]
+    if isinstance(value, list):
+        return [s for v in value for s in _strings(v)]
+    return [value] if isinstance(value, str) else []
+
+
+def test_text_copy_is_the_compact_structured_copy(api: FakeAPI) -> None:
+    api.recordings[1]["unknownServerKey"] = "z" * 5000
+    api.details["e_1"]["unknownServerKey"] = "z" * 5000
+    api.projects[0]["unknownServerKey"] = "z" * 5000
+    server = server_for(api, api.add_token())
+
+    async def go() -> list[Any]:
+        async with Client(server, mode="legacy") as client:
+            return [
+                await client.call_tool("whoami", {}),
+                await client.call_tool("list_projects", {}),
+                await client.call_tool("list_recordings", {}),
+                await client.call_tool("get_recording", {"id": "e_1"}),
+            ]
+
+    for result in run(go):
+        assert result.is_error is False
+        text = text_of(result)
+        assert "unknownServerKey" not in text
+        assert "unknownServerKey" not in json.dumps(result.structured_content)
+        assert "\n" not in text and ": " not in text  # compact, not pretty-printed
+        assert json.loads(text) == result.structured_content
+
+
+def test_server_value_the_model_rejects_blames_the_version(api: FakeAPI) -> None:
+    api.recordings[1]["held"] = False
+    api.details["e_1"]["held"] = False
+    api.details["e_3"] = {k: v for k, v in api.recordings[3].items() if k != "id"}
+    server = server_for(api, api.add_token())
+
+    async def go() -> list[Any]:
+        async with Client(server, mode="legacy") as client:
+            return [
+                await client.call_tool("list_recordings", {}),
+                await client.call_tool("get_recording", {"id": "e_1"}),
+                await client.call_tool("get_recording", {"id": "e_3"}),
+            ]
+
+    for result in run(go):
+        assert result.is_error is True
+        text = text_of(result)
+        assert text == mcp_server.SERVER_NOT_UNDERSTOOD
+        assert "an answer this version does not understand" in text  # as the skill says
+        assert "uv tool upgrade nexus-workbench" in text
+        assert "input schema" not in text
+        assert "false" not in text.lower() and "recordings" not in text
+
+
+def test_non_finite_server_number_blames_the_version(api: FakeAPI) -> None:
+    """JSON from the server may spell NaN, which no JSON result can carry."""
+
+    class NaNScore(c.WorkbenchClient):
+        def call(self, action: str, **args: Any) -> dict[str, Any]:
+            return {**api.details["e_1"], "qualityScore": float("nan")}
+
+    server = mcp_server.build_server(lambda: NaNScore(api_base=API_BASE, token=make_token()))
+
+    async def go() -> Any:
+        async with Client(server, mode="legacy") as client:
+            return await client.call_tool("get_recording", {"id": "e_1"})
+
+    result = run(go)
+    assert result.is_error is True
+    assert text_of(result) == mcp_server.SERVER_NOT_UNDERSTOOD
+
+
+def test_argument_error_keeps_the_argument_message(api: FakeAPI) -> None:
+    server = server_for(api, api.add_token())
+
+    async def go() -> list[Any]:
+        async with Client(server, mode="legacy") as client:
+            return [
+                await client.call_tool("list_recordings", {"limit": 500}),
+                await client.call_tool("get_recording", {"id": ""}),
+            ]
+
+    limit, empty_id = run(go)
+    assert limit.is_error is True and empty_id.is_error is True
+    assert text_of(limit).startswith("Invalid value for limit:")
+    assert text_of(empty_id).startswith("Invalid value for id:")
+    for result in (limit, empty_id):
+        assert "input schema" in text_of(result)
+        assert "Workbench server returned" not in text_of(result)
+
+
 def test_signed_out_message(api: FakeAPI) -> None:
     server = mcp_server.build_server(
         lambda: c.WorkbenchClient(api_base=API_BASE, transport=api.transport)

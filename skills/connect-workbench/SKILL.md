@@ -92,7 +92,7 @@ message, not the exact words; the wording can change between versions.
 | "Workbench did not accept the request" | An argument was refused, often a stale `cursor` when listing. | Check the arguments. When listing, start the list again without the `cursor`. |
 | "Invalid value for <argument>" | The call itself was wrong: an argument of the wrong type, missing, or out of range (for example `limit` above 100). Nothing reached Workbench. | Fix the named argument and call once more. |
 | "Something went wrong in the Workbench tools" | An unexpected error in the local tools. | Ask the researcher to run `nexus-workbench doctor`. |
-| "an answer this version does not understand" | The installed package is older than the server. | Tell the researcher; the message says how to update. |
+| "an answer this version does not understand" | The installed package is older than the server, or the server sent a value this version cannot read. Not a mistake in the call. | Do not change the arguments. Tell the researcher; the message says how to update. |
 
 Never retry a refusal in a loop.
 

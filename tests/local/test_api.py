@@ -17,8 +17,8 @@ from nexus_workbench.local.labels import guess_type, safe_label
 from .conftest import write_test_edf
 
 #: The result size bound docs/tools.md states for one copy of a result (compact JSON, as the
-#: MCP server sends its text copy): 55,000 characters.
-BOUND = 55_000
+#: MCP server sends its text copy): 65,000 characters.
+BOUND = 65_000
 
 FAKE = ("DOE", "JANE", "1971", "02.03.71", "13.14.15", "CLINIC", "SMITH")
 
@@ -194,6 +194,17 @@ def test_errors_are_for_people(night: dict[str, Any], tmp_path: Path) -> None:
             fn()
 
 
+def test_hypnogram_comparison_says_how_each_first_column_was_read(tmp_path: Path) -> None:
+    stages = ["W", "N1", "N2", "N2", "R"]
+    onsets = tmp_path / "onsets.csv"
+    onsets.write_text("".join(f"{30 * k},{s}\n" for k, s in enumerate(stages)))
+    numbered = tmp_path / "numbered.csv"
+    numbered.write_text("".join(f"{k},{s}\n" for k, s in enumerate(stages)))
+    r = api.compare_hypnograms(str(onsets), str(numbered))
+    assert r["firstColumn"] == {"a": "onset_seconds", "b": "epoch_index"}
+    assert r["epochsTotal"] == 5 and r["agreement"] == 1.0
+
+
 def test_hypnogram_length_mismatch(night: dict[str, Any], tmp_path: Path) -> None:
     short = tmp_path / "short.txt"
     short.write_text("W\n" * 100)
@@ -304,22 +315,24 @@ def test_band_count_is_capped_and_the_largest_case_stays_under_the_bound(
     assert len(_dump(r)) < BOUND, len(_dump(r))
 
     # The same layout with every value at its longest printed form: 16-character labels,
-    # six-digit epoch counts, absolute powers like 1.234e-05 and relative powers like 0.1234,
-    # and the longest skipped list.
-    def widen(stats: dict[str, Any]) -> None:
-        stats["absolute"] = [1.234e-05] * len(stats["absolute"])
+    # six-digit epoch counts, relative powers like 0.1234, absolute powers like 1.234e-05 or,
+    # longer still, 1.234e15 (four significant digits print as 1234000000000000.0), and the
+    # longest skipped list.
+    def widen(stats: dict[str, Any], absolute: float) -> None:
+        stats["absolute"] = [absolute] * len(stats["absolute"])
         stats["relative"] = [0.1234] * len(stats["relative"])
 
-    for c in r["channels"]:
-        c["label"], c["type"] = "x" * 16, "other"
-        c["epochsTotal"] = c["epochsUsed"] = 199_999
-        widen(c)
-        for st in c["byStage"].values():
-            st["epochs"] = 199_999
-            widen(st)
     reason = "unit is not a voltage (it is " + "x" * 8 + "), so band power does not apply"
     r["skipped"] = [{"index": 100 + k, "label": "x" * 16, "reason": reason} for k in range(20)]
-    assert len(_dump(r)) < BOUND, len(_dump(r))
+    for absolute in (1.234e-05, 1.234e15):
+        for c in r["channels"]:
+            c["label"], c["type"] = "x" * 16, "other"
+            c["epochsTotal"] = c["epochsUsed"] = 199_999
+            widen(c, absolute)
+            for st in c["byStage"].values():
+                st["epochs"] = 199_999
+                widen(st, absolute)
+        assert len(_dump(r)) < BOUND, (absolute, len(_dump(r)))
 
 
 def test_file_names_in_messages_are_plain_text(tmp_path: Path) -> None:

@@ -40,7 +40,7 @@ physiological artifact.
 |---|---|
 | `nEpochs`, `epochSec` | Epochs checked. `secondsNotInEpochs` is a trailing part shorter than one epoch, not checked. |
 | `channels[].counts`, `percent` | Epochs per class for that channel. |
-| `channels[].overall` | One class for the whole channel. `flat` or `railed`: bad throughout. `suspect`: more than 10 % of epochs classed anything but `ok`, or more than 1 % of all samples on the channel's extremes. Otherwise `ok`. A channel with no `ok` epoch is never `ok` overall. |
+| `channels[].overall` | One class for the whole channel, from the epoch counts. `flat` or `railed`: every epoch is that class. `suspect`: more than 10 % of epochs classed anything but `ok` (so it can come from `flat` or `railed` epochs alone), or more than 1 % of all samples on the channel's extremes. Otherwise `ok`. A channel with no `ok` epoch is never `ok` overall. |
 | `usablePercent` | `ok` epochs over all epochs of all checked channels. |
 | `allChannelsOkPercent` | Epochs in which every checked channel is `ok`. Lower than `usablePercent` when bad stretches fall on different channels. |
 | `badSpans` | Runs of consecutive epochs with the same non-ok class, longest first, at most 20. `badSpansTotal` gives the full count. |

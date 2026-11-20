@@ -25,6 +25,16 @@ def test_overlap_matching_with_a_tolerance() -> None:
     assert mr.extra == [2] and mr.missed == []
 
 
+def test_identical_events_match_when_duration_equals_min_overlap() -> None:
+    """Overlap is measured in floating point, so end minus onset can come out a hair below
+    the duration; an event must still match an identical copy of itself."""
+    rng = random.Random(0)  # noqa: S311 (test data, not security)
+    for duration in (0.3, 1.1):
+        events = [(round(rng.uniform(0, 28790), 2), duration) for _ in range(2153)]
+        s = score_events(events, events, min_overlap_sec=duration)
+        assert s.matched == 2153 and s.missed == 0 and s.extra == 0
+
+
 def test_scores_hand_computed() -> None:
     # 2 of 3 candidates match, both references found: precision 2/3, recall 1,
     # F1 = 2 * (2/3) * 1 / (2/3 + 1) = 0.8, one extra in 8 h = 0.125 per hour.
@@ -143,6 +153,27 @@ def test_matching_stays_quick_with_many_events_and_a_wide_tolerance(tmp_path: Pa
     null = r["shuffledNull"]
     assert 1 <= null["nShuffles"] < 200 and null["reduced"] is True
     assert r["matched"] > 19_000
+
+
+def test_default_shuffles_all_run_on_an_ordinary_night(tmp_path: Path) -> None:
+    """3,000 reference events and a detector that finds each one a little off: all 200
+    default shuffles run, and none is dropped for the work bound."""
+    rng = random.Random(5)  # noqa: S311 (test data, not security)
+    rows = [(rng.uniform(0, 28790), rng.uniform(0.5, 2.0)) for _ in range(3000)]
+    ref = tmp_path / "ref.csv"
+    ref.write_text("".join(f"{t:.3f},{d:.3f}\n" for t, d in rows))
+    cand = tmp_path / "cand.csv"
+    cand.write_text(
+        "".join(
+            f"{max(0.0, t + rng.gauss(0, 0.3)):.3f},{d * rng.uniform(0.8, 1.2):.3f}\n"
+            for t, d in rows
+        )
+    )
+    t0 = time.perf_counter()
+    r = api.compare_events(str(ref), str(cand), recording_hours=8)
+    assert time.perf_counter() - t0 < 20
+    null = r["shuffledNull"]
+    assert null["nShuffles"] == 200 and null["reduced"] is False
 
 
 def test_shuffled_null_stops_at_the_work_bound() -> None:
