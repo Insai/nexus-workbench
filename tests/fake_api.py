@@ -56,6 +56,8 @@ class FakeAPI:
     agent_api_available: bool = True
     rate_limit_next: list[str] = field(default_factory=list)  # Retry-After values to send first
     fail_next: list[str] = field(default_factory=list)  # "connect" -> raise ConnectError
+    workspace_name: str = "Sleep lab"
+    token_name: str = "laptop"
 
     @property
     def transport(self) -> httpx.MockTransport:
@@ -127,12 +129,12 @@ class FakeAPI:
             return httpx.Response(
                 200,
                 json={
-                    "workspace": {"id": "w_1", "name": "Sleep lab"},
+                    "workspace": {"id": "w_1", "name": self.workspace_name},
                     "role": "member",
                     "scopes": ["read"],
                     "token": {
                         "id": auth.token_id(token),
-                        "name": "laptop",
+                        "name": self.token_name,
                         "createdAt": "2026-11-20T09:15:00Z",
                         "expiresAt": "2027-02-18T09:15:00Z",
                     },

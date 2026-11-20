@@ -15,7 +15,14 @@ from collections.abc import Sequence
 from typing import Any
 
 from . import __version__, auth
-from .client import EARLY_ACCESS_URL, WorkbenchClient, WorkbenchError, resolve_api_base
+from .client import (
+    EARLY_ACCESS_URL,
+    WorkbenchClient,
+    WorkbenchError,
+    display_name,
+    resolve_api_base,
+)
+from .client import safe_text as _safe
 from .login import LoginFailed, LoginIO, describe_result, run_login
 
 OK, FAILURE, USAGE = 0, 1, 2
@@ -91,10 +98,13 @@ def cmd_whoami(args: argparse.Namespace) -> int:
         return OK
     workspace = data.get("workspace") or {}
     token = data.get("token") or {}
-    print(f"Workspace: {workspace.get('name', '(unnamed)')} ({workspace.get('id', '?')})")
-    print(f"Role:      {data.get('role', '?')}")
-    print(f"Token:     {token.get('name', '(unnamed)')} ({token.get('id', '?')})")
-    print(f"Expires:   {token.get('expiresAt') or 'unknown'}")
+    print(
+        f"Workspace: {display_name(workspace.get('name'))} "
+        f"({_safe(workspace.get('id')) or 'unknown'})"
+    )
+    print(f"Role:      {_safe(data.get('role')) or 'unknown'}")
+    print(f"Token:     {display_name(token.get('name'))} ({_safe(token.get('id')) or 'unknown'})")
+    print(f"Expires:   {_safe(token.get('expiresAt')) or 'unknown'}")
     return OK
 
 
@@ -123,14 +133,6 @@ def _flags(row: dict[str, Any]) -> str:
     if row.get("pairId"):
         flags.append("paired")
     return ",".join(flags)
-
-
-def _safe(value: Any) -> str:
-    """Show server text as plain text on one line."""
-    if value is None:
-        return ""
-    text = str(value)
-    return "".join(ch if ch.isprintable() else " " for ch in text)
 
 
 def format_recordings_table(rows: list[dict[str, Any]]) -> str:
@@ -178,7 +180,93 @@ def cmd_recordings(args: argparse.Namespace) -> int:
     if data.get("truncated"):
         _err("The list is incomplete: the workspace holds more recordings than one pass reads.")
     if data.get("nextCursor"):
-        print(f"More recordings: run again with --cursor {data['nextCursor']}")
+        print(f"More recordings: run again with --cursor {_safe(data['nextCursor'])}")
+    return OK
+
+
+# ---------------------------------------------------------------------------
+# local files: sample / qc
+# ---------------------------------------------------------------------------
+
+
+def cmd_sample(args: argparse.Namespace) -> int:
+    from .local.sample import make_sample_night  # noqa: PLC0415
+
+    if not 0.5 <= args.hours <= 24:
+        _err("--hours must be between 0.5 and 24.")
+        return USAGE
+    if args.seed < 0:
+        _err("--seed must be zero or more.")
+        return USAGE
+    try:
+        night = make_sample_night(args.out, hours=args.hours, seed=args.seed)
+    except OSError as exc:
+        _err(f"Could not write the sample files: {exc.strerror or type(exc).__name__}.")
+        return FAILURE
+    print(f"Wrote a synthetic {args.hours:g} h night (seed {args.seed}) to {args.out}:")
+    for key in ("edf", "hypnogram", "hypnogramScorer2", "eventsReference", "eventsCandidate"):
+        print(f"  {night[key]}")
+    print(f"Try: nexus-workbench qc {night['edf']}")
+    return OK
+
+
+def _pct(value: Any) -> str:
+    return "-" if value is None else f"{value:g}%"
+
+
+def format_qc(info: dict[str, Any], quality: dict[str, Any]) -> str:
+    lines = [
+        f"File:      {info['format']}, {_fmt_duration(info['durationSec'])}, "
+        f"{info['nChannels']} channels, id {info['recordingId']}",
+        f"Epochs:    {quality['nEpochs']} of {quality['epochSec']:g} s",
+        f"Usable:    {_pct(quality['usablePercent'])} of channel epochs are ok; "
+        f"{_pct(quality['allChannelsOkPercent'])} of epochs are ok on every channel",
+        "",
+    ]
+    headers = ["#", "LABEL", "TYPE", "HZ", "OVERALL", "OK", "SUSPECT", "FLAT", "RAILED"]
+    rates = {ch["index"]: ch["sampleRateHz"] for ch in info["channels"]}
+    table = [headers]
+    for ch in quality["channels"]:
+        pct = ch["percent"]
+        rate = rates.get(ch["index"])
+        table.append(
+            [
+                str(ch["index"]),
+                ch["label"],
+                ch["type"],
+                "" if rate is None else f"{rate:g}",
+                ch["overall"],
+                *(_pct(pct.get(k)) for k in ("ok", "suspect", "flat", "railed")),
+            ]
+        )
+    widths = [max(len(r[i]) for r in table) for i in range(len(headers))]
+    lines += ["  ".join(c.ljust(w) for c, w in zip(r, widths, strict=True)).rstrip() for r in table]
+    for skipped in quality["skipped"]:
+        lines.append(f"Skipped {skipped['label']}: {skipped['reason']}")
+    spans = quality["badSpans"]
+    if spans:
+        lines += ["", f"Longest bad stretches ({len(spans)} of {quality['badSpansTotal']}):"]
+        lines += [
+            f"  {s['channel']}: {s['class']} from {s['startSec']:g} s to {s['endSec']:g} s"
+            for s in spans[:5]
+        ]
+    return "\n".join(lines)
+
+
+def cmd_qc(args: argparse.Namespace) -> int:
+    from .local import api  # noqa: PLC0415
+    from .local.errors import LocalToolError  # noqa: PLC0415
+
+    try:
+        info = api.inspect_edf(args.path)
+        quality = api.check_signal_quality(args.path)
+    except LocalToolError as exc:
+        _err(exc.message)
+        return FAILURE
+    if args.json:
+        print(json.dumps({"inspect_edf": info, "check_signal_quality": quality}, indent=2))
+        return OK
+    print(format_qc(info, quality))
     return OK
 
 
@@ -217,9 +305,9 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         try:
             with _client() as client:
                 data = client.call("whoami")
-            workspace = (data.get("workspace") or {}).get("name", "(unnamed)")
-            expires = (data.get("token") or {}).get("expiresAt") or "unknown"
-            print(f"Workbench: signed in to {_safe(workspace)}, token expires {expires}")
+            workspace = display_name((data.get("workspace") or {}).get("name"))
+            expires = _safe((data.get("token") or {}).get("expiresAt")) or "unknown"
+            print(f"Workbench: signed in to {workspace}, token expires {expires}")
         except WorkbenchError as exc:
             print(f"Workbench: {exc}")
             ok = False
@@ -320,6 +408,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--cursor", help="cursor printed by the previous page")
     p.add_argument("--json", action="store_true", help="print the raw JSON")
     p.set_defaults(func=cmd_recordings)
+
+    p = sub.add_parser("sample", help="write a synthetic sample night to try the local tools on")
+    p.add_argument(
+        "--out", default="nexus-sample", help="folder to write to (default ./nexus-sample)"
+    )
+    p.add_argument("--hours", type=float, default=8.0, help="length, 0.5 to 24 (default 8)")
+    p.add_argument("--seed", type=int, default=0, help="random seed (default 0)")
+    p.set_defaults(func=cmd_sample)
+
+    p = sub.add_parser("qc", help="describe a local EDF file and check its signal quality")
+    p.add_argument("path", help="EDF or EDF+ file on this computer")
+    p.add_argument("--json", action="store_true", help="print the raw results as JSON")
+    p.set_defaults(func=cmd_qc)
 
     p = sub.add_parser("doctor", help="check the install and the sign-in")
     p.set_defaults(func=cmd_doctor)

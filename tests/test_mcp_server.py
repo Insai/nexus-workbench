@@ -16,6 +16,14 @@ from nexus_workbench import mcp_server
 from tests.fake_api import API_BASE, FakeAPI, make_token, sample_data
 
 WORKSPACE_TOOLS = {"whoami", "list_projects", "list_recordings", "get_recording"}
+LOCAL_TOOLS = {
+    "inspect_edf",
+    "check_signal_quality",
+    "compute_band_power",
+    "compare_hypnograms",
+    "compare_events",
+}
+ALL_TOOLS = WORKSPACE_TOOLS | LOCAL_TOOLS
 
 
 def server_for(api: FakeAPI, token: str | None) -> Any:
@@ -51,7 +59,8 @@ def test_lists_tools_with_annotations_and_schemas(api: FakeAPI) -> None:
 
     tools, instructions, info = run(go)
     by_name = {t.name: t for t in tools.tools}
-    assert set(by_name) == WORKSPACE_TOOLS
+    assert set(by_name) == ALL_TOOLS
+    assert len(tools.tools) == 9
     assert info.name == "nexus"
     assert "read-only" in instructions
     assert "nexus-workbench login" in instructions
@@ -62,7 +71,7 @@ def test_lists_tools_with_annotations_and_schemas(api: FakeAPI) -> None:
         assert ann.read_only_hint is True
         assert ann.destructive_hint is False
         assert ann.idempotent_hint is True
-        assert ann.open_world_hint is True
+        assert ann.open_world_hint is (tool.name in WORKSPACE_TOOLS)
         assert ann.title and tool.title
         assert tool.output_schema and tool.output_schema.get("type") == "object"
         assert tool.description and len(tool.description) > 60
@@ -294,7 +303,7 @@ def test_stdio_handshake_only_protocol_on_stdout(tmp_path: Path) -> None:
         parsed.append(obj)
     by_id = {m["id"]: m for m in parsed if "id" in m}
     assert by_id[1]["result"]["serverInfo"]["name"] == "nexus"
-    assert {t["name"] for t in by_id[2]["result"]["tools"]} == WORKSPACE_TOOLS
+    assert {t["name"] for t in by_id[2]["result"]["tools"]} == ALL_TOOLS
     call = by_id[3]["result"]
     assert call["isError"] is True
     assert "Not signed in" in call["content"][0]["text"]

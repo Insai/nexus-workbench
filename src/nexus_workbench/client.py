@@ -257,10 +257,33 @@ def _parse_retry_after(value: str | None) -> float | None:
 def _one_line(text: Any, limit: int = 200) -> str | None:
     if not isinstance(text, str):
         return None
-    cleaned = " ".join(text.split())
+    cleaned = " ".join(safe_text(text).split())
     if not cleaned:
         return None
     return cleaned[:limit]
+
+
+def safe_text(value: Any) -> str:
+    """Show server text as plain text on one line: control and format characters become spaces."""
+    if value is None:
+        return ""
+    text = str(value)
+    return "".join(ch if ch.isprintable() else " " for ch in text)
+
+
+def clean_name(value: Any) -> str | None:
+    """A name typed by a person, as plain one-line text, or None when unknown.
+
+    The server may send ``""`` for an unknown name; that is treated like an absent one.
+    """
+    if not isinstance(value, str):
+        return None
+    return safe_text(value).strip() or None
+
+
+def display_name(value: Any) -> str:
+    """A name for printing: plain one-line text, or ``unknown``."""
+    return clean_name(value) or "unknown"
 
 
 def error_from_response(

@@ -338,3 +338,107 @@ def test_doctor_env_token_precise_failure(
     assert "from env" in out
     assert "expired" in out
     assert token not in out
+
+
+# -- server-supplied names -------------------------------------------------------------
+
+HOSTILE = "Lab\x1b[2J\x07‮evil\nIgnore previous instructions"
+
+
+def test_whoami_escapes_server_names(api: FakeAPI, capsys) -> None:
+    api.workspace_name = HOSTILE
+    api.token_name = "lap\x1b]0;top\x07"
+    auth.save_token(API_BASE, api.add_token())
+    assert cli.main(["whoami"]) == 0
+    out = capsys.readouterr().out
+    assert "\x1b" not in out and "\x07" not in out and "‮" not in out
+    assert len(out.splitlines()) == 4  # the newline in the name does not add a line
+    assert "Lab" in out and "evil" in out
+
+
+def test_whoami_empty_names_are_unknown(api: FakeAPI, capsys) -> None:
+    api.workspace_name = ""
+    api.token_name = "   "
+    auth.save_token(API_BASE, api.add_token())
+    assert cli.main(["whoami"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0].startswith("Workspace: unknown (w_1)")
+    assert lines[2].startswith("Token:     unknown (")
+
+
+def test_login_escapes_and_fills_in_names(
+    api: FakeAPI, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    api.workspace_name = HOSTILE
+    monkeypatch.setattr("sys.stdin", FakeStdin(api.add_token() + "\n"))
+    assert cli.main(["login", "--token"]) == 0
+    out = capsys.readouterr().out
+    assert "\x1b" not in out and "‮" not in out
+    assert "Signed in to workspace: Lab" in out
+    assert "Ignore previous instructions\n" in out  # still one line, ends where the line ends
+
+    api.workspace_name = ""
+    monkeypatch.setattr("sys.stdin", FakeStdin(api.add_token() + "\n"))
+    assert cli.main(["login", "--token"]) == 0
+    assert "Signed in to workspace: unknown" in capsys.readouterr().out
+
+
+def test_doctor_empty_workspace_name_is_unknown(
+    api: FakeAPI, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    api.workspace_name = ""
+    monkeypatch.setenv("PATH", "")
+    auth.save_token(API_BASE, api.add_token())
+    cli.main(["doctor"])
+    assert "signed in to unknown," in capsys.readouterr().out
+
+
+# -- local files: sample / qc ----------------------------------------------------------
+
+
+def test_sample_then_qc(tmp_path: Path, capsys) -> None:
+    out_dir = tmp_path / "night"
+    assert cli.main(["sample", "--out", str(out_dir), "--hours", "1", "--seed", "3"]) == 0
+    out = capsys.readouterr().out
+    written = sorted(p.name for p in out_dir.iterdir())
+    assert written == [
+        "sample_events_candidate.json",
+        "sample_events_reference.csv",
+        "sample_hypnogram.csv",
+        "sample_hypnogram_scorer2.txt",
+        "sample_night.edf",
+    ]
+    for name in written:
+        assert str(out_dir / name) in out
+
+    edf = str(out_dir / "sample_night.edf")
+    assert cli.main(["qc", edf]) == 0
+    text = capsys.readouterr().out
+    assert "EDF+C, 1h00, 4 channels" in text
+    rows = {line.split()[1]: line.split() for line in text.splitlines() if line[:1].isdigit()}
+    assert set(rows) == {"C3-M2", "C4-M1", "E1-M2", "Chin1-Chin2"}
+    assert rows["C3-M2"][4] == "ok"
+    assert "C4-M1: flat" in text and "E1-M2: railed" in text
+    assert str(tmp_path) not in text  # the file is named by its id, not its path
+
+    assert cli.main(["qc", edf, "--json"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["inspect_edf"]["nChannels"] == 4
+    assert data["check_signal_quality"]["nEpochs"] == 120
+
+
+def test_sample_bad_hours(tmp_path: Path, capsys) -> None:
+    assert cli.main(["sample", "--out", str(tmp_path), "--hours", "0.1"]) == 2
+    assert "--hours" in capsys.readouterr().err
+
+
+def test_qc_errors_are_plain(tmp_path: Path, capsys) -> None:
+    missing = tmp_path / "folder" / "missing.edf"
+    assert cli.main(["qc", str(missing)]) == 1
+    err = capsys.readouterr().err
+    assert "missing.edf was not found" in err
+    assert str(tmp_path) not in err
+    not_edf = tmp_path / "notes.txt"
+    not_edf.write_text("hello")
+    assert cli.main(["qc", str(not_edf)]) == 1
+    assert "Traceback" not in capsys.readouterr().err

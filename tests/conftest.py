@@ -7,10 +7,21 @@ import pytest
 
 from nexus_workbench import auth
 
+LOCAL_TESTS = Path(__file__).parent / "local"
+
 
 @pytest.fixture(autouse=True)
-def isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
-    """Keep every test away from the real config, agents and environment."""
+def isolated(request: pytest.FixtureRequest) -> Iterator[Path | None]:
+    """Keep every CLI, client and server test away from the real config, agents and environment.
+
+    The local file tool tests in ``tests/local`` touch none of these and keep their own
+    fixtures, so they are left alone.
+    """
+    if Path(str(request.node.path)).is_relative_to(LOCAL_TESTS):
+        yield None
+        return
+    tmp_path: Path = request.getfixturevalue("tmp_path")
+    monkeypatch: pytest.MonkeyPatch = request.getfixturevalue("monkeypatch")
     config = tmp_path / "config"
     monkeypatch.setattr(auth, "config_dir", lambda: config)
     for name in (

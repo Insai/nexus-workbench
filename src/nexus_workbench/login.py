@@ -20,6 +20,8 @@ from .client import (
     Unauthenticated,
     WorkbenchClient,
     WorkbenchError,
+    display_name,
+    safe_text,
 )
 
 CODE_ALPHABET = "ABCDEFGHJKMNPQRSTVWXYZ23456789"
@@ -221,10 +223,8 @@ def describe_result(result: LoginResult, io: LoginIO) -> None:
     if result.whoami:
         workspace = result.whoami.get("workspace") or {}
         token = result.whoami.get("token") or {}
-        name = workspace.get("name") or "(unnamed)"
-        io.say(f"Signed in to workspace: {name}")
-        expires = token.get("expiresAt")
-        io.say(f"Token expires: {expires or 'unknown'}")
+        io.say(f"Signed in to workspace: {display_name(workspace.get('name'))}")
+        io.say(f"Token expires: {safe_text(token.get('expiresAt')) or 'unknown'}")
     else:
         io.say("Token saved.")
         if result.whoami_error is not None:

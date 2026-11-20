@@ -28,7 +28,7 @@ uvx nexus-workbench setup
 3. Copies the packaged skills into `~/.claude/skills/` and `~/.codex/skills/`
    (or `$CLAUDE_CONFIG_DIR/skills/` and `$CODEX_HOME/skills/`). A skill folder
    that is already there and was not installed by this package is left alone.
-4. Signs you in to Workbench, unless you are signed in already.
+4. Signs you in to Workbench with a token, unless you are signed in already.
 
 Options: `--agent claude|codex|all`, `--no-login`, `--dry-run` (print every
 command and file write, change nothing), `--yes` (do not ask first). Running
@@ -41,15 +41,29 @@ Then open Claude Code or Codex and ask: "list my Workbench recordings".
 | Command | What it does |
 |---|---|
 | `nexus-workbench setup` | Install, register the MCP server, install skills, sign in. |
-| `nexus-workbench login` | Sign in. Opens Workbench in your browser to approve this computer. |
-| `nexus-workbench login --token` | Paste a token made in Workbench (account menu, "Connect an agent"). Piped input works too: `nexus-workbench login --token < token.txt`. A token is never accepted as a command-line argument. |
+| `nexus-workbench login` | Sign in with a token (see [Sign in](#sign-in)). |
+| `nexus-workbench login --token` | Paste a token made in Workbench. Piped input works too: `nexus-workbench login --token < token.txt`. A token is never accepted as a command-line argument. |
 | `nexus-workbench logout` | Remove the saved token from this computer. |
 | `nexus-workbench whoami` | Show the workspace your token reads. |
 | `nexus-workbench recordings` | List recordings (`--project`, `--limit`, `--cursor`, `--json`). |
+| `nexus-workbench sample` | Write a synthetic sample night to try the local tools on (`--out`, `--hours`, `--seed`). |
+| `nexus-workbench qc PATH` | Describe a local EDF file and check its signal quality (`--json` for the raw results). |
 | `nexus-workbench doctor` | Check the install, the sign-in and the agent registrations. |
 | `nexus-workbench mcp` | Run the MCP server on stdio. Your agent starts this; you do not need to. |
 
 `nexus` is a shorter name for the same command.
+
+## Sign in
+
+Today you sign in with a token:
+
+1. In Workbench, open the account menu and choose "Connect an agent".
+2. Make a token there and copy it.
+3. Run `nexus-workbench login --token` and paste it. The token is checked with
+   Workbench, then saved on this computer.
+
+Instead of saving it, you can set the `NEXUS_TOKEN` environment variable to the
+token. Signing in through the browser comes later.
 
 ## Signed out and signed in
 
@@ -75,11 +89,45 @@ computer.
 
 ### Local tools (no account, no network)
 
-<!-- LOCAL TOOLS: this section is written with the local tools. See docs/tools.md. -->
+These read a file on your computer and send nothing anywhere. They work signed
+out. Inputs, outputs and methods are in [docs/tools.md](docs/tools.md).
 
-`inspect_edf`, `check_signal_quality`, `compute_band_power`,
-`compare_hypnograms`, `compare_events`. Their inputs and outputs are described
-in [docs/tools.md](docs/tools.md).
+| Tool | Returns |
+|---|---|
+| `inspect_edf` | Format, duration and channels of an EDF or EDF+ file. |
+| `check_signal_quality` | Per channel, how many epochs are ok, suspect, flat or railed, and the longest bad stretches. |
+| `compute_band_power` | Delta, theta, alpha, sigma and beta power per EEG channel over clean epochs, and per sleep stage with a hypnogram. |
+| `compare_hypnograms` | Agreement, Cohen's kappa, per-stage precision, recall and F1, and the confusion matrix for two hypnograms of one night. |
+| `compare_events` | One-to-one matching of candidate events to reference events, with precision, recall, F1 and a shuffled null. |
+
+To try them, write the synthetic sample night. Nothing in it comes from a
+recording:
+
+```sh
+nexus-workbench sample --out ./nexus-sample --hours 8
+```
+
+This writes `sample_night.edf`, two hypnograms and two event files. Check the
+EDF from the terminal:
+
+```sh
+nexus-workbench qc ./nexus-sample/sample_night.edf
+```
+
+It prints the file's format and length, and one row per channel with the share
+of ok, suspect, flat and railed epochs. Add `--json` for the full results.
+
+In Claude Code or Codex, ask for example:
+
+- "Inspect ./nexus-sample/sample_night.edf" (`inspect_edf`)
+- "Check the signal quality of ./nexus-sample/sample_night.edf" (`check_signal_quality`)
+- "Compute band power per sleep stage for ./nexus-sample/sample_night.edf with the
+  hypnogram ./nexus-sample/sample_hypnogram.csv" (`compute_band_power`)
+- "Compare ./nexus-sample/sample_hypnogram.csv with
+  ./nexus-sample/sample_hypnogram_scorer2.txt" (`compare_hypnograms`)
+- "Compare the candidate events ./nexus-sample/sample_events_candidate.json with the
+  reference ./nexus-sample/sample_events_reference.csv for an 8 hour recording"
+  (`compare_events`)
 
 ## Privacy
 
