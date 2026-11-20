@@ -38,7 +38,7 @@ else on the file.
 | `nChannels`, `channelsListed`, `truncated` | If `truncated` is `true`, only the first 128 channels are listed. Say so. |
 | `channels[].label` | Standard names come through; any other label is shown as `ch<N>` (N is the position in the file). |
 | `channels[].type` | A guess from the label: `eeg`, `eog`, `emg`, `ecg` or `other`. A `ch<N>` channel is usually `other`. Treat the guess as a guess. |
-| `channels[].sampleRateHz` | Note mixed rates. EEG below about 100 Hz limits which bands can be measured (half the rate is the ceiling). |
+| `channels[].sampleRateHz` | Note mixed rates. Half the rate is the ceiling for any band. The default bands go up to 30 Hz, so they need at least 60 Hz. |
 | `channels[].unit` | `uV`, `mV` and similar are voltages. `other` means an unusual unit; the quality and band-power tools skip non-voltage channels. |
 | `channels[].physicalMin`, `physicalMax` | A very narrow range can clip real EEG; a range far wider than the signal wastes resolution. Flag either for the quality check. |
 | `channels[].index` | The 1-based position in the file. Other tools accept the label, `ch<N>`, or this position. Positions can skip the EDF+ annotation signal. |

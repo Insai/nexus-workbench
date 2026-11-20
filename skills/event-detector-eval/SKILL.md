@@ -69,6 +69,9 @@ report all of them, not the best one.
   distinguishable from chance timing on this night.
 - With dense events the null F1 can be high. A high F1 means little if the null is close.
 - If `reduced` is `true`, fewer shuffles ran than asked; `nShuffles` says how many. Report it.
+- The null shifts events across the whole night. Events that occur only in one sleep
+  stage (spindles in N2 and N3, for example) beat it just by falling in that stage, in
+  both files. Compare within that stage, or say that the null is whole-night.
 - The null answers "is the timing better than chance". It does not tell you whether the
   detector finds the right events, or whether the reference is right.
 

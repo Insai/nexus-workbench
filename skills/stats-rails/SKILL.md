@@ -41,14 +41,18 @@ Never pool epochs or events across nights and call the pooled count n.
 | Interval within one night's time series | Block bootstrap with blocks longer than the autocorrelation | Resampling single epochs |
 | p-value from a permutation or shuffle | (r + 1) / (n + 1), where r is shuffles at least as extreme and n is shuffles; the smallest possible p is 1 / (n + 1) | Reporting p = 0 |
 | Null for autocorrelated labels or events | Block or circular shifts that keep the structure (as `compare_events` does) | Shuffling single epochs, which destroys structure and makes the null too easy |
-| Kappa | A fixed label set for every night (`W`, `N1`, `N2`, `N3`, `R`); `kappa` from `compare_hypnograms` | A label set taken from whatever stages appear that night; treating a constant-label case as perfect agreement |
+| Kappa | `kappa` from `compare_hypnograms`; unweighted kappa does not depend on which absent stages are listed | Treating a constant-label case (`kappa` `null`) as perfect agreement |
+| Macro-F1 or any mean over stages | A fixed label set for every night (`W`, `N1`, `N2`, `N3`, `R`), with `null` stages counted and reported | A label set taken from whatever stages appear that night |
 | Agreement across stages | Kappa first, raw agreement second | Raw agreement alone; it is inflated by the most common stage |
 | Detector result | F1 next to the shuffled null (`f1P95`) | F1 alone |
+| Several tests in one analysis | Fix the family of tests in advance; correct with Holm (family-wise error) or Benjamini-Hochberg (false discovery rate); report how many tests ran | Reporting only the tests that passed |
 
 ## Small samples
 
-- With fewer than 3 people, an interval is not evidence. "The interval excludes 0" with 3
-  people means three numbers shared a sign. Call it a screen and say so.
+- With fewer than 6 people, a 95 % interval is not evidence. If there is no effect, all
+  people share a sign by chance 25 % of the time with 3 people and about 6 % with 5.
+- With fewer than about 20 people, a percentile bootstrap interval is too narrow.
+- Call a result from fewer than about 20 people a screen, not a finding, and say so.
 - Carry the number of people with every interval, all the way to the final table. Do not
   drop it when a result is copied into a summary.
 - A null result at small n is "no evidence either way", not "no effect", unless a power
@@ -56,8 +60,9 @@ Never pool epochs or events across nights and call the pooled count n.
 
 ## Means and units
 
-- Pooled means (all epochs together) and person means (mean of each person's mean) are
-  both valid and give different numbers. Pick one before the run and use it in every arm.
+- The unit of analysis is the person, so summaries across people are means of person
+  means. A pooled mean over all epochs or nights weights people by how much data they
+  gave; report it only as a description, never as the basis of an interval or test.
 - Give values in absolute units first, then ratios with the denominator named.
 - A `null` from a tool means not computable. Leave it out and say how many were left out;
   never replace it with zero.
@@ -73,8 +78,9 @@ Never pool epochs or events across nights and call the pooled count n.
 ## Stop and ask the researcher
 
 - The night-to-person mapping is missing.
-- Fewer than 3 people, or very unequal nights per person.
-- The pooled versus per-person choice has not been made.
+- Fewer than about 20 people (a screen at best; under 6, no interval is evidence), or very
+  unequal nights per person.
+- The family of tests and the correction have not been fixed.
 
 ## Report
 
@@ -82,5 +88,6 @@ Never pool epochs or events across nights and call the pooled count n.
 Unit: person (<n people>, <n nights>). Summary per person: <mean of nights>.
 Estimate <value> <unit>, 95 % interval <low> to <high> (person bootstrap, <B> resamples, seed <s>).
 Null: <method>, p = <value> (add-one corrected, <n> shuffles).
-Left out: <count> null values. Small-sample note: <if under 3 people>.
+Tests in family: <n>, correction <Holm | Benjamini-Hochberg>.
+Left out: <count> null values. Small-sample note: <screen if under about 20 people>.
 ```

@@ -8,9 +8,10 @@ description: Compute EEG band power (delta, theta, alpha, sigma, beta) from a lo
 For research use only. Not for clinical decision-making.
 
 `compute_band_power` gives mean absolute and relative power per band per channel, over
-artifact-free epochs only, and per stage when a hypnogram is given. The numbers depend on
-the method, the reference and the quality rule, so they are comparable only with numbers
-made the same way.
+the epochs the quality check classes `ok` on that channel, and per stage when a hypnogram
+is given. `ok` is not the same as artifact-free (see the signal-qc skill). The numbers
+depend on the method, the reference and the quality rule, so they are comparable only with
+numbers made the same way.
 
 ## Handling rules
 
@@ -54,7 +55,7 @@ made the same way.
 | `channels[].epochsUsed`, `epochsTotal` | Epochs behind the overall numbers. |
 | `channels[].byStage` | Per stage `W`, `N1`, `N2`, `N3`, `R`: `epochs`, `absolute`, `relative`. A stage with `epochs` 0 has `null` powers. |
 | `hypnogram` | `fileId`, `epochs`, `unscored`, `extraEpochsIgnored`. Unscored epochs count in the overall numbers but in no stage. |
-| `bandsAboveNyquist` | Bands whose upper edge is above half the sample rate. Those values are partial or `null`. |
+| `channels[].bandsAboveNyquist` | Per channel, the names of bands whose upper edge is above half that channel's sample rate. Absent when no band is cut. A band that starts at or above half the rate is `null`; one that only ends above it is partial. |
 | `skipped`, `truncated` | Non-voltage channels left out; a channel cap was hit. |
 
 ## Reporting rules
@@ -80,7 +81,7 @@ made the same way.
 ## Stop and ask the researcher
 
 - A stage the question depends on has few or zero usable epochs.
-- `bandsAboveNyquist` is not empty for a band they care about.
+- A channel has `bandsAboveNyquist` listing a band they care about.
 - The hypnogram's `unscored` count is large, or `extraEpochsIgnored` is not 0 and they did
   not expect it.
 - The question is a comparison across nights or people. Then the unit of analysis is the

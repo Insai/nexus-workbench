@@ -19,20 +19,24 @@ this before any number, negative or verdict goes into a report.
 ## Power and controls
 
 1. Can the analysis detect the effect here? Run the same method on a case where the effect
-   is known. A method with no power gives false negatives, and searching over many
-   placements on noise gives false positives. A tell: every flagged night is short of the
-   stage the measure needs.
-2. Positive control, and check the plant. A control whose planted effect is wrong reports
-   a working method as broken. Assert that the planted case actually differs from the
-   clean one before reading the result.
+   is known. A method with no power gives false negatives. Trying many windows, channels
+   or thresholds on noise gives false positives. A warning sign: every night the method
+   flags has little of the sleep stage the measure needs.
+2. Use a positive control, and check the control itself. For example, an event file with
+   events at known times. A control built wrong makes a working method look broken, so
+   first confirm the control case really differs from the clean case.
 3. Checks must be able to fail. Feed a check one input that must fail and confirm it
    fails. A pass means something only if failure was reachable.
-4. Nulls specific to the item. When the null depends on how rare a stage or event is on
-   that night, use that night's own shuffled labels, not one floor for all nights.
-5. Blind a new analysis. Build it on shuffled or offset labels until it is frozen, then
-   unblind once.
-6. Keep a negative control that must read null, such as shuffled labels or a
-   phase-scrambled channel.
+4. Use a null for each night. When the null depends on how rare a stage or event is on
+   that night, use that night's own null (for example the circular shift `compare_events`
+   runs), not one floor for all nights. Sleep data are autocorrelated, so shift in time;
+   do not shuffle single epochs (see the stats-rails skill).
+5. Blind a new analysis. Build it on circularly shifted labels or events until it is
+   frozen, then unblind once.
+6. Keep a negative control that must read null. For example, pass `compare_events` a copy
+   of the candidate file with every onset moved by a fixed offset much longer than an
+   event, wrapping past the end of the recording back to the start. Its F1 should fall to
+   the null.
 
 ## Independent evidence
 
@@ -46,12 +50,13 @@ this before any number, negative or verdict goes into a report.
 
 ## Comparisons and units
 
-10. Use the same estimator in every arm. A pooled mean and a mean of person means are both
-    valid and cannot be compared with each other.
+10. Use the same estimator in every arm: the mean of person means, since the person is the
+    unit (see the stats-rails skill). Never compare a pooled mean with a person mean.
 11. Give magnitudes in absolute units first, then ratios with the denominator named.
-12. Ask what the consumer of a ratio scales with before changing its denominator, and
-    whether a test is blind to a class of error by design. If it is, add a separate
-    check; do not tune the threshold.
+12. Before changing what a ratio is divided by (per hour, per epoch, per night), check
+    what the people who use the number expect it to scale with.
+    Ask whether a check cannot see some kind of error by design. If so, add a separate
+    check for that error; do not tune the threshold to hide it.
 13. For a result that depends on a threshold, report it across the defensible thresholds,
     agreed in advance. For `compare_events` that is `min_overlap` and `tolerance_sec`; for
     `check_signal_quality` it is the epoch length.
@@ -60,15 +65,15 @@ this before any number, negative or verdict goes into a report.
 
 14. Name the unit and match it to the claim: people for physiology, devices for hardware,
     nights for a recording claim. An epoch count is none of these.
-15. Two cases and one that looks similar are not three. Measure before you write the
-    sentence.
+15. Two measured cases and a third that only looks similar are two cases, not three.
+    Measure the third before you count it.
 16. Look for the recorded value first. Before deriving a number, check whether the tool
     output already has it. When you read one key, read its neighbours: `epochsUsed` next
     to a band power, `epochsCompared` next to a kappa, `truncated` next to any list,
     `reduced` next to a null.
-17. A count inherits the reader's defects. If a file could not be read, it is not a file
-    without the property. Rerun counts with the current tools before treating them as
-    facts about the data.
+17. A count is only as good as the tool that made it. A file the tool could not read is
+    unread, not a file without the property. Rerun counts with the current tools before
+    treating them as facts about the data.
 18. Split an aggregate by stratum before naming a cause. A total can hide parts with
     opposite signs. A filtered count equal to the unfiltered total means the filter did
     not run.
@@ -76,13 +81,13 @@ this before any number, negative or verdict goes into a report.
 ## Checking the checks
 
 19. A test that asserts a value the code itself sets can never fail. Assert the property.
-20. An empty search result from an unchecked pattern is not evidence. Run the pattern on a
-    known positive in the same step.
-21. Name the input explicitly. A check that picks the newest file or a default will happily
-    report on last week's output in the present tense. Quote the exact file, or its
-    `recordingId` or `fileId`, in the verdict.
-22. A correction goes where the wrong sentence is read, not in a note elsewhere. Do not put
-    a status that will go stale ("still pending") into a lasting document.
+20. A search that finds nothing proves nothing until the same search finds a known
+    positive. Run it on one in the same step.
+21. Name the input explicitly. A check that picks the newest file or a default can report
+    on an old output as if it were current. Quote the exact file, or its `recordingId` or
+    `fileId`, in the verdict.
+22. Put a correction next to the wrong sentence, not in a note elsewhere. Do not write a
+    status that will go stale, such as "still pending", into a document meant to last.
 
 ## Claims this package never supports
 

@@ -24,11 +24,14 @@ One that does not is worth fixing first.
   mapping; the workspace tools return no participant codes.
 - A night whose person cannot be resolved must stop the split, not become its own person.
   Under-grouping leaks and makes intervals too narrow.
-- Strip session or night suffixes from identifiers before grouping.
+- Do not guess the person from file or folder names, for example by stripping session
+  suffixes. Ask the researcher for the mapping from recording to person.
 - Recordings with the same `pairId` are one combined night. Keep them on one side.
 - One recording can appear twice under two names (a copy, a cache, an export). The local
-  tools name a file by `recordingId`, a hash of its bytes; equal ids are the same file.
-  Check for duplicates across the split before running.
+  tools name a file by `recordingId`, a hash of its bytes. Equal ids catch only
+  byte-identical copies. A re-export, a trimmed copy or a converted file has a different
+  id, so ask the researcher how files were produced. Check for duplicates across the split
+  before running.
 
 ## 2. What the compared methods were trained on
 
@@ -71,8 +74,9 @@ One that does not is worth fixing first.
 
 - Bootstrap and permutation over people, not rows. See the stats-rails skill.
 - Nulls for autocorrelated series use block or circular shifts; p uses the add-one rule.
-- Fewer than 3 people: a screen, not a result.
-- Kappa with a fixed label set across nights.
+- Under 6 people a 95 % interval is not evidence; under about 20 the bootstrap interval is
+  too narrow. Either way it is a screen, not a finding.
+- Macro-F1 or any mean over stages uses a fixed label set across nights.
 
 ## 7. Features and missing data
 

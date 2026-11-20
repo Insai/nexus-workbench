@@ -39,7 +39,7 @@ physiological artifact.
 | `channels[].overall` | One class for the whole channel. `flat` or `railed`: bad throughout. `suspect`: more than 10 % of epochs saturated, flat or holding a constant run, or more than 1 % of samples on the extremes. Otherwise `ok`. |
 | `usablePercent` | `ok` epochs over all epochs of all checked channels. |
 | `allChannelsOkPercent` | Epochs in which every checked channel is `ok`. Lower than `usablePercent` when bad stretches fall on different channels. |
-| `badSpans` | Runs of consecutive non-ok epochs, longest first, at most 20. `badSpansTotal` gives the full count. |
+| `badSpans` | Runs of consecutive epochs with the same non-ok class, longest first, at most 20. `badSpansTotal` gives the full count. |
 | `skipped` | Channels left out because their unit is not a voltage, with the reason. |
 | `thresholds` | The thresholds used, in microvolts. Quote them if a reader will compare runs. |
 | `truncated`, `channelsTruncated` | A cap was hit. Say so. |

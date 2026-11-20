@@ -7,10 +7,11 @@ description: Write down an analysis plan before running it, with the question, t
 
 For research use only. Not for clinical decision-making.
 
-A pre-registration is worth its timestamp. If the plan is committed to version control
+A pre-registration is worth its timestamp. If the plan has a date others can trust from
 before the numbers exist, anyone can check that the acceptance rule was not chosen after
-seeing the result. Without it, an ambiguous result tends to be judged by whichever cut
-looks best, and nobody can tell afterwards.
+seeing the result. A local commit date can be changed. A commit pushed to a shared remote,
+or an entry in a public registry, is what fixes the date. Without it, an ambiguous result
+tends to be judged by whichever cut looks best, and nobody can tell afterwards.
 
 Use this before computing. Once the numbers are in, this skill cannot help; write an
 honest result section on the plan you have, or grade the analysis as exploratory.
@@ -32,9 +33,10 @@ honest result section on the plan you have, or grade the analysis as exploratory
    under version control.
 3. Write every section below. A missing section is where room to adjust after the fact
    comes from.
-4. Commit the plan alone, before the run, with a message that names the question. The
-   commit time is the evidence of order. Point to the plan's path from the analysis code
-   or notebook so each links to the other.
+4. Ask the researcher before committing anything. With their agreement, commit the plan
+   alone, before the run, with a message that names the question. The date counts as
+   evidence of order once the commit is pushed or the plan is in a public registry. Point
+   to the plan's path from the analysis code or notebook so each links to the other.
 5. Run the analysis exactly as written.
 6. At close, fill the result section. Give the verdict against each rule as written. If you
    deviated, say how and why. A documented deviation is fine; a silent one is what this
@@ -79,6 +81,11 @@ minimum epochs per stage, seeds.
 
 Decision: which combination of rules means go, stop, or inconclusive.
 
+## Multiple comparisons
+The full family of tests (every arm, stage, channel, band and threshold that will be
+tested), the correction (Holm or Benjamini-Hochberg), and a promise to report how many
+tests ran.
+
 ## Power
 Number of people, the smallest effect detectable at that number, and whether this run can
 confirm or only rule out.
@@ -111,7 +118,8 @@ correction note at the top of the section it affects.)
 ## Report
 
 ```
-Plan: <path>, committed <commit id> before the run.
+Plan: <path>, committed <commit id> before the run, pushed <where> or registered <where>.
+Tests in family: <n>, correction <method>.
 Question: <one sentence>. Split unit: person. Part: <held-out | tuning>.
 Rules: R1 <...>, R2 <...>, R3 <...>. Decision: <...>.
 Power: <n people>, can <confirm | only rule out>.
