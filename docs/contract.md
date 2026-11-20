@@ -254,6 +254,11 @@ means "not available; use a token".
 
 `{"action": "start", "deviceName": "<≤64 chars>", "clientVersion": "<≤32 chars>"}`
 
+`deviceName` is required. It is trimmed, cleaned of control and invisible
+characters and cut to 64 characters. If no letter or digit is left, `start`
+returns 400 `invalid_argument`. `clientVersion` is optional and cut to 32
+characters.
+
 ```json
 {
   "sessionId": "<32 hex>",
@@ -264,7 +269,12 @@ means "not available; use a token".
 ```
 
 A session lives 10 minutes. The server builds `approvalUrl`; the client opens
-it and never builds its own.
+it and never builds its own. `approvalUrl` may have a path before
+`/cli/login/`. Open it as given.
+
+`start` is limited per network address: 10 a minute, 30 an hour, and 5
+sessions waiting for approval at once. Over a limit it returns 429
+`rate_limited` with `Retry-After`.
 
 `{"action": "exchange", "sessionId": "…", "pollSecret": "…", "code": "…"}`
 
@@ -278,6 +288,9 @@ it and never builds its own.
 }
 ```
 
+The token is named after the device, lasts 90 days, and is listed with
+`createdVia: "cli_login"`.
+
 Errors add two codes to section 3.1:
 
 | HTTP | `code` | When |
@@ -285,8 +298,29 @@ Errors add two codes to section 3.1:
 | 410 | `login_expired` | The session is unknown, expired, denied, used, or out of attempts. |
 | 400 | `code_wrong` | The code does not match. The body carries `"attemptsLeft": <n>`. Five attempts per session. |
 
+```json
+{"error": {"code": "code_wrong", "message": "…"}, "attemptsLeft": 4}
+```
+
+`attemptsLeft` sits at the top level of the body, next to `error`. The fifth
+wrong code returns `code_wrong` with `attemptsLeft` 0. The next call returns
+`login_expired`.
+
 A wrong `pollSecret` gives `login_expired` and does not use up an attempt.
 `exchange` works once.
+
+- `exchange` before the person has approved returns 400 `invalid_argument`.
+  It does not use up an attempt. Ask for the code first, then call `exchange`.
+- A `code` that, after the clean-up in section 5.3, is not exactly 8
+  characters from the alphabet counts as a wrong code: `code_wrong`, and an
+  attempt is used.
+- A `code` that is not a string, or is longer than 32 characters as sent,
+  returns 400 `invalid_argument` and uses no attempt.
+- `exchange` can also return 403 `forbidden`, 403 `early_access_required`, or
+  409 `token_limit` when the person already has the most tokens allowed.
+  After these the session stays approved until it expires.
+- Too many failed `exchange` calls from one address return 429
+  `rate_limited`.
 
 ### 5.2 Callable `workbench_cli_login_review` (signed-in person)
 
@@ -295,6 +329,20 @@ A wrong `pollSecret` gives `login_expired` and does not use up an attempt.
 | `get` | `sessionId` | `{"status": "pending"|"approved"|"denied"|"expired"|"used", "deviceName": "…", "createdAt": "…", "expiresAt": "…", "scopes": ["read"], "workspaces": [{"id": "…", "name": "…", "agentAccess": bool}]}`. Never returns the code. |
 | `approve` | `sessionId`, `workspaceId` | `{"code": "ABCD-EFGH"}`, once. A second `approve` is refused. |
 | `deny` | `sessionId` | `{"status": "denied"}` |
+
+- `get` on an unknown session returns `{"status": "expired"}`. A session that
+  is out of attempts also reads `expired`.
+- While a session is pending, any signed-in person who opens the link sees
+  the full details. After approval only the approver does; everyone else gets
+  `{"status": "…"}` alone.
+- `workspaces` lists up to 100 active workspaces the person belongs to,
+  sorted by name.
+- `approve` is refused with `forbidden`, `early_access_required`,
+  `token_limit`, or `login_expired` if the session is no longer pending.
+- Any signed-in person can deny a pending session. Only the approver can deny
+  an approved one; others get `forbidden`. Denying a denied session returns
+  `{"status": "denied"}` again. Denying an expired or used session returns
+  `login_expired`.
 
 ### 5.3 Code
 
