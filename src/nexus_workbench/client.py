@@ -263,11 +263,21 @@ def _one_line(text: Any, limit: int = 200) -> str | None:
     return cleaned[:limit]
 
 
-def safe_text(value: Any) -> str:
-    """Show server text as plain text on one line: control and format characters become spaces."""
+#: Longest server text shown by :func:`safe_text` unless the caller asks for another limit.
+SAFE_TEXT_LIMIT = 200
+
+
+def safe_text(value: Any, limit: int | None = SAFE_TEXT_LIMIT) -> str:
+    """Show server text as plain text on one line: control and format characters become spaces.
+
+    At most ``limit`` characters are kept (``None`` keeps them all, for ids and cursors that
+    must round-trip).
+    """
     if value is None:
         return ""
     text = str(value)
+    if limit is not None:
+        text = text[:limit]
     return "".join(ch if ch.isprintable() else " " for ch in text)
 
 

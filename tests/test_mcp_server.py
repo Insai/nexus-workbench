@@ -307,3 +307,85 @@ def test_stdio_handshake_only_protocol_on_stdout(tmp_path: Path) -> None:
     call = by_id[3]["result"]
     assert call["isError"] is True
     assert "Not signed in" in call["content"][0]["text"]
+
+
+def test_stdio_local_tool_keeps_identity_fields_out(tmp_path: Path) -> None:
+    """A real `nexus-workbench mcp` process, one local tool call on an EDF whose header has
+    every identity field filled in: stdout is JSON-RPC only, and no identity text appears."""
+    import numpy as np  # noqa: PLC0415
+
+    from tests.local.conftest import write_test_edf  # noqa: PLC0415
+
+    identity = ("ZEPHYRA", "QUILLON", "1913", "XANADU", "KESTREL")
+    rng = np.random.default_rng(0)
+    edf = write_test_edf(
+        tmp_path / "night.edf",
+        [rng.normal(0, 20, 6000), rng.normal(0, 20, 6000)],
+        100,
+        ["C3-M2", "QUILLON ZEPHYRA"],
+        annotations=[(5.0, 0.0, "ZEPHYRA^QUILLON said hello")],
+        patient="ZEPHYRA^QUILLON F 01-JAN-1913 KESTREL",
+        recording="Startdate 02-MAR-1913 QUILLON XANADU",
+        start_date="02.03.13",
+        start_time="13.14.15",
+    )
+    exe = Path(sys.executable).parent / (
+        "nexus-workbench.exe" if os.name == "nt" else "nexus-workbench"
+    )
+    assert exe.exists(), exe
+    messages = [
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {"name": "test", "version": "0"},
+            },
+        },
+        {"jsonrpc": "2.0", "method": "notifications/initialized"},
+        *(
+            {
+                "jsonrpc": "2.0",
+                "id": k,
+                "method": "tools/call",
+                "params": {"name": name, "arguments": {"path": str(edf)}},
+            }
+            for k, name in ((2, "inspect_edf"), (3, "check_signal_quality"))
+        ),
+    ]
+    proc = subprocess.Popen(
+        [str(exe), "mcp"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=_child_env(tmp_path),
+    )
+    assert proc.stdin and proc.stdout
+    lines: list[str] = []
+    try:
+        for m in messages:
+            proc.stdin.write(json.dumps(m) + "\n")
+            proc.stdin.flush()
+            if "id" in m:
+                lines.append(proc.stdout.readline())
+        rest, err = proc.communicate(timeout=60)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+    out = "".join(lines) + rest
+    by_id = {}
+    for line in out.splitlines():
+        if line.strip():
+            obj = json.loads(line)
+            assert obj.get("jsonrpc") == "2.0"
+            by_id[obj.get("id")] = obj
+    assert by_id[2]["result"]["isError"] is False
+    assert by_id[2]["result"]["structuredContent"]["nChannels"] == 2
+    assert by_id[3]["result"]["isError"] is False
+    for text in identity:
+        assert text not in out, text
+        assert text not in err, text
+    assert str(tmp_path) not in out

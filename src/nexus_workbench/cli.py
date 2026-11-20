@@ -9,6 +9,7 @@ import argparse
 import json
 import os
 import platform
+import shlex
 import shutil
 import sys
 from collections.abc import Sequence
@@ -180,7 +181,7 @@ def cmd_recordings(args: argparse.Namespace) -> int:
     if data.get("truncated"):
         _err("The list is incomplete: the workspace holds more recordings than one pass reads.")
     if data.get("nextCursor"):
-        print(f"More recordings: run again with --cursor {_safe(data['nextCursor'])}")
+        print(f"More recordings: run again with --cursor {_safe(data['nextCursor'], limit=None)}")
     return OK
 
 
@@ -190,7 +191,7 @@ def cmd_recordings(args: argparse.Namespace) -> int:
 
 
 def cmd_sample(args: argparse.Namespace) -> int:
-    from .local.sample import make_sample_night  # noqa: PLC0415
+    from .local.sample import FILE_NAMES, make_sample_night  # noqa: PLC0415
 
     if not 0.5 <= args.hours <= 24:
         _err("--hours must be between 0.5 and 24.")
@@ -198,6 +199,14 @@ def cmd_sample(args: argparse.Namespace) -> int:
     if args.seed < 0:
         _err("--seed must be zero or more.")
         return USAGE
+    existing = [n for n in FILE_NAMES if os.path.lexists(os.path.join(args.out, n))]
+    if existing and not args.force:
+        more = f" and {len(existing) - 1} other sample file(s)" if len(existing) > 1 else ""
+        _err(
+            f"{existing[0]}{more} already exist in that folder. Run again with --force to "
+            "replace them, or pass another folder with --out."
+        )
+        return FAILURE
     try:
         night = make_sample_night(args.out, hours=args.hours, seed=args.seed)
     except OSError as exc:
@@ -206,7 +215,7 @@ def cmd_sample(args: argparse.Namespace) -> int:
     print(f"Wrote a synthetic {args.hours:g} h night (seed {args.seed}) to {args.out}:")
     for key in ("edf", "hypnogram", "hypnogramScorer2", "eventsReference", "eventsCandidate"):
         print(f"  {night[key]}")
-    print(f"Try: nexus-workbench qc {night['edf']}")
+    print(f"Try: nexus-workbench qc {shlex.quote(night['edf'])}")
     return OK
 
 
@@ -261,7 +270,14 @@ def cmd_qc(args: argparse.Namespace) -> int:
         info = api.inspect_edf(args.path)
         quality = api.check_signal_quality(args.path)
     except LocalToolError as exc:
-        _err(exc.message)
+        # qc always uses 30 s epochs, so the tools' epoch_sec advice does not apply here.
+        _err(exc.message.replace(api.SHORT_FILE_HINT, "qc needs a recording of 30 s or more."))
+        return FAILURE
+    except Exception as exc:  # noqa: BLE001  (one plain line, never a traceback)
+        _err(
+            "Something went wrong while reading the file "
+            f"({type(exc).__name__}). Check that it is a 16-bit EDF or EDF+ file."
+        )
         return FAILURE
     if args.json:
         print(json.dumps({"inspect_edf": info, "check_signal_quality": quality}, indent=2))
@@ -415,6 +431,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--hours", type=float, default=8.0, help="length, 0.5 to 24 (default 8)")
     p.add_argument("--seed", type=int, default=0, help="random seed (default 0)")
+    p.add_argument(
+        "--force",
+        action="store_true",
+        help="replace sample files already in the folder (without it, existing files are "
+        "left alone and the command stops)",
+    )
     p.set_defaults(func=cmd_sample)
 
     p = sub.add_parser("qc", help="describe a local EDF file and check its signal quality")

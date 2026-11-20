@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import shlex
 from pathlib import Path
 from typing import Any
 
@@ -442,3 +443,56 @@ def test_qc_errors_are_plain(tmp_path: Path, capsys) -> None:
     not_edf.write_text("hello")
     assert cli.main(["qc", str(not_edf)]) == 1
     assert "Traceback" not in capsys.readouterr().err
+
+
+def test_qc_names_the_file_as_plain_text(tmp_path: Path, capsys) -> None:
+    assert cli.main(["qc", str(tmp_path / "x\x1b[2J\ny.edf")]) == 1
+    err = capsys.readouterr().err
+    assert "\x1b" not in err and err.count("\n") == 1
+
+
+def test_qc_unexpected_error_is_one_plain_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    from nexus_workbench.local import api as local_api  # noqa: PLC0415
+
+    def boom(path: str) -> dict[str, Any]:
+        raise RuntimeError(f"internal detail {path}")
+
+    monkeypatch.setattr(local_api, "inspect_edf", boom)
+    assert cli.main(["qc", str(tmp_path / "x.edf")]) == 1
+    err = capsys.readouterr().err
+    assert "Traceback" not in err and "internal detail" not in err
+    assert err.count("\n") == 1
+
+
+def test_qc_short_file_hint_fits_the_cli(tmp_path: Path, capsys) -> None:
+    import numpy as np  # noqa: PLC0415
+
+    from tests.local.conftest import write_test_edf  # noqa: PLC0415
+
+    p = write_test_edf(tmp_path / "short.edf", [np.zeros(1000)], 100)
+    assert cli.main(["qc", str(p)]) == 1
+    err = capsys.readouterr().err
+    assert "shorter than one 30 s epoch" in err
+    assert "epoch_sec" not in err
+
+
+def test_sample_try_line_quotes_the_path(tmp_path: Path, capsys) -> None:
+    out_dir = tmp_path / "my night's files"
+    assert cli.main(["sample", "--out", str(out_dir), "--hours", "0.5"]) == 0
+    out = capsys.readouterr().out
+    edf = str(out_dir / "sample_night.edf")
+    assert f"Try: nexus-workbench qc {shlex.quote(edf)}" in out
+
+
+def test_sample_refuses_to_overwrite_without_force(tmp_path: Path, capsys) -> None:
+    out_dir = tmp_path / "night"
+    assert cli.main(["sample", "--out", str(out_dir), "--hours", "0.5"]) == 0
+    capsys.readouterr()
+    before = (out_dir / "sample_night.edf").read_bytes()
+    assert cli.main(["sample", "--out", str(out_dir), "--hours", "0.5", "--seed", "1"]) == 1
+    err = capsys.readouterr().err
+    assert "--force" in err and "sample_night.edf" in err and str(tmp_path) not in err
+    assert (out_dir / "sample_night.edf").read_bytes() == before
+    assert cli.main(["sample", "--out", str(out_dir), "--hours", "0.5", "--force"]) == 0

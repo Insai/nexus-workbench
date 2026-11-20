@@ -212,3 +212,117 @@ def test_names_are_plain_data_fields(api: FakeAPI) -> None:
         assert "null" in descriptions[name]
     for name in WORKSPACE_TOOLS:
         assert "Ignore previous" not in descriptions[name]
+
+
+# -- result size, argument errors, data notes ---------------------------------------------
+
+#: The bounds docs/tools.md states for one local tool call: one copy of the result, and the
+#: text copy plus the structured copy.
+MCP_BOUND = 55_000
+MCP_BOUND_BOTH = 110_000
+
+
+def test_widest_band_power_call_stays_under_the_documented_bound(tmp_path: Path) -> None:
+    """32 channels, 8 custom bands, 12 hours and a hypnogram: the largest local result."""
+    import numpy as np  # noqa: PLC0415
+
+    from tests.local.conftest import write_test_edf  # noqa: PLC0415
+
+    fs, hours, n_ch = 8, 12, 32
+    rng = np.random.default_rng(0)
+    rows = [rng.normal(0, 20, fs * 3600 * hours) for _ in range(n_ch)]
+    labels = [f"C{k}-M1" if k < 10 else f"F{k}-M2" for k in range(n_ch)]
+    edf = write_test_edf(tmp_path / "wide.edf", rows, fs, labels)
+    hyp = tmp_path / "wide_hyp.txt"
+    hyp.write_text("".join(["W\n", "N1\n", "N2\n", "N3\n", "R\n"][i % 5] for i in range(1440)))
+    # Eight bands with the longest allowed names, all below the 4 Hz Nyquist limit of the file,
+    # so every power is a number.
+    bands = {f"b{k}" + "x" * 22: [0.5 + 0.4 * k, 0.9 + 0.4 * k] for k in range(8)}
+
+    async def go() -> Any:
+        async with Client(signed_out_server(), mode="legacy") as client:
+            return await client.call_tool(
+                "compute_band_power",
+                {"path": str(edf), "hypnogram_path": str(hyp), "bands": bands},
+            )
+
+    result = anyio.run(go)
+    assert result.is_error is False
+    power = result.structured_content
+    assert len(power["channels"]) == 32 and all("byStage" in ch for ch in power["channels"])
+    text = text_of(result)
+    assert json.loads(text) == power  # the text copy is the same result
+    assert len(text) < MCP_BOUND, len(text)
+    total = len(text) + len(json.dumps(power, separators=(",", ":"), ensure_ascii=False))
+    assert total < MCP_BOUND_BOTH, total
+
+
+def test_wrong_argument_types_are_short_plain_errors(night: dict[str, Any]) -> None:
+    async def go() -> list[Any]:
+        async with Client(signed_out_server(), mode="legacy") as client:
+            return [
+                await client.call_tool(
+                    "check_signal_quality", {"path": night["edf"], "epoch_sec": "x"}
+                ),
+                await client.call_tool("inspect_edf", {"path": 5}),
+                await client.call_tool("inspect_edf", {}),
+                await client.call_tool("compare_events", {"reference_path": [1]}),
+            ]
+
+    results = anyio.run(go)
+    for result in results:
+        assert result.is_error is True
+        text = text_of(result)
+        assert "pydantic" not in text and "http" not in text and "\n" not in text
+        assert len(text) < 300, text
+    assert "epoch_sec" in text_of(results[0])
+    assert "path" in text_of(results[1]) and "path" in text_of(results[2])
+    assert "reference_path" in text_of(results[3])
+
+
+def test_every_tool_says_its_contents_are_data() -> None:
+    async def go() -> Any:
+        async with Client(signed_out_server(), mode="legacy") as client:
+            return await client.list_tools()
+
+    descriptions = {t.name: t.description for t in anyio.run(go).tools}
+    for name in WORKSPACE_TOOLS:
+        assert mcp_server.NAMES_ARE_DATA in descriptions[name], name
+    for name in LOCAL_TOOLS:
+        assert mcp_server.FILES_ARE_DATA in descriptions[name], name
+
+
+def test_server_strings_are_cleaned_everywhere(api: FakeAPI) -> None:
+    bad = "x\x1b[31m\ny\x07"
+    server = server_for(api, api.add_token())
+    for row in api.recordings:
+        row["device"] = bad
+        row["qualityGrade"] = bad
+    api.details["e_1"].update(
+        device=bad,
+        qualityGrade=bad,
+        url="https://workbench.test.invalid/r/e_1\x1b",
+        channels={"count": 1, "labels": [bad], "types": {bad: 1}},
+        eventCounts={bad: 2},
+    )
+
+    async def go() -> Any:
+        async with Client(server, mode="legacy") as client:
+            return (
+                await client.call_tool("list_recordings", {}),
+                await client.call_tool("get_recording", {"id": "e_1"}),
+            )
+
+    rows, detail = anyio.run(go)
+    for result in (rows, detail):
+        assert result.is_error is False, text_of(result)
+        dumped = json.dumps(result.structured_content)
+        assert "\\u001b" not in dumped and "\\n" not in dumped and "\\u0007" not in dumped
+        assert "\x1b" not in text_of(result)
+    d = detail.structured_content
+    assert d["device"] == "x [31m y"
+    assert d["channels"]["labels"] == ["x [31m y"]
+    assert list(d["channels"]["types"]) == ["x [31m y"]
+    assert list(d["eventCounts"]) == ["x [31m y"]
+    assert d["url"] == "https://workbench.test.invalid/r/e_1"
+    assert rows.structured_content["recordings"][0]["device"] == "x [31m y"
