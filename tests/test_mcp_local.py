@@ -288,6 +288,8 @@ def test_every_tool_says_its_contents_are_data() -> None:
     descriptions = {t.name: t.description for t in anyio.run(go).tools}
     for name in WORKSPACE_TOOLS:
         assert mcp_server.NAMES_ARE_DATA in descriptions[name], name
+    for name in ("list_projects", "list_recordings"):
+        assert "Limited to 10 calls a minute." in descriptions[name], name
     for name in LOCAL_TOOLS:
         assert mcp_server.FILES_ARE_DATA in descriptions[name], name
 

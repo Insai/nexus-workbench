@@ -268,7 +268,8 @@ def workspace_tools(factory: ClientFactory) -> list[ToolSpec]:
             description=(
                 "Returns the workspace's live projects, sorted by name: id, name, created and "
                 "updated times, and recordingCount. Use a project id with list_recordings. "
-                "A name is null when it is not known. " + NAMES_ARE_DATA
+                "A name is null when it is not known. Limited to 10 calls a minute. "
+                + NAMES_ARE_DATA
             ),
         ),
         ToolSpec(
