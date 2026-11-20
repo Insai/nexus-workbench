@@ -75,7 +75,7 @@ minimum epochs per stage, seeds.
 ## Acceptance rules
 | # | Rule | Threshold | Kind |
 |---|---|---|---|
-| R1 | Person-level bootstrap interval on the difference excludes 0 | 95 % | numeric |
+| R1 | Person-level bootstrap interval on the difference excludes 0. With fewer than 6 people the result is a screen only | 95 % | numeric |
 | R2 | Beats the stated null | p < 0.05 with add-one correction | null |
 | R3 | <domain rule, for example no stage with F1 below a floor> | <value> | structural |
 

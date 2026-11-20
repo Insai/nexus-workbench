@@ -55,7 +55,7 @@ report all of them, not the best one.
 | `eventsInFiles`, `labelFilter` | Events in each file before the label filter, and whether a filter was used. |
 | `reference`, `candidate` | Events compared. |
 | `matched`, `missed`, `extra` | Matched pairs; reference events with no match; candidate events with no match. |
-| `precision`, `recall`, `f1` | `matched / candidate`, `matched / reference`, and their harmonic mean. `null` when a side is empty. |
+| `precision`, `recall`, `f1` | `matched / candidate`, `matched / reference`, and their harmonic mean. `precision` is `null` with no candidate events and `recall` is `null` with no reference events. `f1` is `null` only when both are empty, and 0 when one is. |
 | `falsePositivesPerHour` | `extra / recordingHours`; `null` without `recording_hours`. |
 | `matching` | Rule (greedy one to one, closest midpoint first), `minOverlapSec`, `toleranceSec`. |
 | `shuffledNull` | `method`, `seed`, `nShuffles`, `reduced`, `f1Mean`, `f1P95`, `recallMean`. |
@@ -71,7 +71,8 @@ report all of them, not the best one.
 - If `reduced` is `true`, fewer shuffles ran than asked; `nShuffles` says how many. Report it.
 - The null shifts events across the whole night. Events that occur only in one sleep
   stage (spindles in N2 and N3, for example) beat it just by falling in that stage, in
-  both files. Compare within that stage, or say that the null is whole-night.
+  both files. The tool's null is always whole-night. A within-stage null needs your own
+  code. The report must say which null was used.
 - The null answers "is the timing better than chance". It does not tell you whether the
   detector finds the right events, or whether the reference is right.
 

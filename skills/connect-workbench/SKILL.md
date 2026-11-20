@@ -85,8 +85,11 @@ message, not the exact words; the wording can change between versions.
 | "not switched on for this workspace yet" | Agent access is off for this workspace. | See Early access. Stop. |
 | "Agent access is not available on this Workbench server yet" | The server does not offer agent access yet. | Stop and tell the researcher. Local tools still work. |
 | "does not exist in this workspace, or you cannot see it" | The id is not in this workspace, or they may not see it. | Re-list with `list_projects` or `list_recordings`; do not guess ids. |
-| "Too many requests to Workbench" | Too many calls. | Wait the number of seconds given (or a minute), then retry once. `list_projects` and `list_recordings` allow 10 calls a minute; the other tools allow more. |
+| "Too many requests to Workbench" | Too many calls. | Wait the number of seconds given (or a minute), then retry once. Each token allows 60 calls a minute; `list_recordings` allows 10 a minute. |
 | "Could not reach Workbench", "Workbench had a problem answering" | Network or server trouble. | Try once more later. If it persists, ask the researcher to run `nexus-workbench doctor`. |
+| "Workbench took too long to answer" | The server did not answer in time. | Retry once. If it happens again, check the connection. |
+| "Workbench did not accept the request" | An argument was refused, often a stale `cursor` when listing. | Check the arguments. When listing, start the list again without the `cursor`. |
+| "Something went wrong in the Workbench tools" | An unexpected error in the local tools. | Ask the researcher to run `nexus-workbench doctor`. |
 | "an answer this version does not understand" | The installed package is older than the server. | Tell the researcher; the message says how to update. |
 
 Never retry a refusal in a loop.

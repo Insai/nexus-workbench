@@ -38,7 +38,8 @@ numbers made the same way.
 ## Steps
 
 1. Call `compute_band_power` with `path` and `hypnogram_path`. Optional:
-   - `channels`: default is channels whose label looks like EEG; at most 32.
+   - `channels`: default is channels whose label looks like EEG; at most 32. When no
+     channel looks like EEG, every voltage channel is used.
    - `epoch_sec`: default 30. Must match the hypnogram.
    - `bands`: up to 12 custom bands as `{"name": [low Hz, high Hz], ...}`. Default bands are delta
      0.5 to 4, theta 4 to 8, alpha 8 to 12, sigma 12 to 16, beta 16 to 30 Hz, each
@@ -51,7 +52,7 @@ numbers made the same way.
 | `bands` | Band names and edges, in the order of every power list. |
 | `unit` | `uV^2` for absolute power. Other voltage units are converted to µV first. |
 | `method` | PSD estimator, window, overlap, integration rule, relative-power rule, averaging rule. Quote it. |
-| `channels[].absolute`, `relative` | Means over usable epochs. With contiguous default bands, relative powers sum to 1. |
+| `channels[].absolute`, `relative` | `absolute` is the mean over epochs classed `ok`. `relative` is mean band power divided by mean total power. With contiguous default bands, relative powers sum to 1. |
 | `channels[].epochsUsed`, `epochsTotal` | Epochs behind the overall numbers. |
 | `channels[].byStage` | Per stage `W`, `N1`, `N2`, `N3`, `R`: `epochs`, `absolute`, `relative`. A stage with `epochs` 0 has `null` powers. |
 | `hypnogram` | `fileId`, `epochs`, `unscored`, `extraEpochsIgnored`. Unscored epochs count in the overall numbers but in no stage. |
