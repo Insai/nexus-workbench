@@ -1,0 +1,11 @@
+{
+  "name": "nexus-workbench",
+  "version": "0.1.0",
+  "description": "Read-only access to an Insai Workbench workspace (projects and recordings) from Claude Code, plus local tools for EEG files. Early access. For research use only.",
+  "author": {
+    "name": "Insai"
+  },
+  "homepage": "https://insai.tech/workbench",
+  "license": "Apache-2.0",
+  "keywords": ["eeg", "sleep", "edf", "mcp", "workbench"]
+}

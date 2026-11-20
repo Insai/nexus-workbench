@@ -21,11 +21,17 @@ classifiers = [
 dependencies = [
   "mcp>=2.3,<3",
   "httpx>=0.27",
-  "keyring>=25",
   "platformdirs>=4",
+  "typing-extensions>=4.13",
   "numpy>=1.26",
   "scipy>=1.11",
 ]
+
+[project.optional-dependencies]
+keyring = ["keyring>=25"]
+
+[project.urls]
+Homepage = "https://insai.tech/workbench"
 
 [project.scripts]
 nexus-workbench = "nexus_workbench.cli:main"
@@ -51,3 +57,6 @@ target-version = "py310"
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "S", "SIM"]
 ignore = ["S101"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S103", "S105", "S106", "S108", "S603", "S607"]

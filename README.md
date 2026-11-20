@@ -1,6 +1,117 @@
 # nexus-workbench
 
-Early access. CLI, MCP server and skills that connect Claude Code and Codex to
-Insai Workbench, plus local tools for EEG files on your own machine.
+Connects Claude Code and Codex to Insai Workbench, where sleep researchers
+review EEG recordings. It gives your coding agent a local MCP server named
+`nexus`, a few skills, and a command line to sign in. It also has local tools
+that read EEG files on your own computer.
+
+**Early access.** Agent access is switched on per workspace. Ask for it at
+<https://insai.tech/workbench>.
 
 For research use only. Not for clinical decision-making.
+
+## Install
+
+You need [uv](https://docs.astral.sh/uv/). Then run:
+
+```sh
+uvx nexus-workbench setup
+```
+
+`setup` does four things and tells you what it did:
+
+1. Installs `nexus-workbench` with `uv tool install`, so it keeps working in new
+   terminals.
+2. Registers the MCP server with Claude Code (`claude mcp add --scope user`)
+   and Codex (`codex mcp add`), using the full path to the installed command.
+   An agent that is not installed is skipped.
+3. Copies the packaged skills into `~/.claude/skills/` and `~/.codex/skills/`
+   (or `$CLAUDE_CONFIG_DIR/skills/` and `$CODEX_HOME/skills/`). A skill folder
+   that is already there and was not installed by this package is left alone.
+4. Signs you in to Workbench, unless you are signed in already.
+
+Options: `--agent claude|codex|all`, `--no-login`, `--dry-run` (print every
+command and file write, change nothing), `--yes` (do not ask first). Running
+`setup` again changes nothing that is already in place.
+
+Then open Claude Code or Codex and ask: "list my Workbench recordings".
+
+## Commands
+
+| Command | What it does |
+|---|---|
+| `nexus-workbench setup` | Install, register the MCP server, install skills, sign in. |
+| `nexus-workbench login` | Sign in. Opens Workbench in your browser to approve this computer. |
+| `nexus-workbench login --token` | Paste a token made in Workbench (account menu, "Connect an agent"). Piped input works too: `nexus-workbench login --token < token.txt`. A token is never accepted as a command-line argument. |
+| `nexus-workbench logout` | Remove the saved token from this computer. |
+| `nexus-workbench whoami` | Show the workspace your token reads. |
+| `nexus-workbench recordings` | List recordings (`--project`, `--limit`, `--cursor`, `--json`). |
+| `nexus-workbench doctor` | Check the install, the sign-in and the agent registrations. |
+| `nexus-workbench mcp` | Run the MCP server on stdio. Your agent starts this; you do not need to. |
+
+`nexus` is a shorter name for the same command.
+
+## Signed out and signed in
+
+Signed out, the local file tools work and need no account. The workspace tools
+answer "Not signed in" and tell the agent to ask you to run
+`nexus-workbench login`.
+
+Signed in, the workspace tools read your Workbench workspace.
+
+## Tools
+
+Every tool is read-only. None of them changes anything in Workbench or on your
+computer.
+
+### Workspace tools (need sign-in)
+
+| Tool | Returns |
+|---|---|
+| `whoami` | The workspace name and id, your role, and the token's name and expiry. |
+| `list_projects` | Live projects with their recording counts. |
+| `list_recordings` | One page of recordings, newest first (50 by default, at most 100; page with `cursor`). |
+| `get_recording` | One recording: channel summary, minutes per sleep stage, event and mark counts, when you are allowed to see them. |
+
+### Local tools (no account, no network)
+
+<!-- LOCAL TOOLS: this section is written with the local tools. See docs/tools.md. -->
+
+`inspect_edf`, `check_signal_quality`, `compute_band_power`,
+`compare_hypnograms`, `compare_events`. Their inputs and outputs are described
+in [docs/tools.md](docs/tools.md).
+
+## Privacy
+
+- Read-only. A token has the `read` scope and no tool writes anything.
+- The workspace tools never return recording names, notes, participant codes,
+  file names, recording start dates or times, or who added or scored a
+  recording. Channel labels that are not standard electrode names come back as
+  `ch1`, `ch2` and so on. A recording you are blinded on comes back without
+  stage, event or mark counts.
+- A token sees what its owner sees in Workbench and never more.
+- The local tools never read or return an EDF file's patient field, recording
+  field or start date and time, and never return raw signal samples. Files are
+  named by an id made from their content, not by their path.
+- Tokens are stored in a file only you can read (permissions `600`) in your
+  user config folder, one per Workbench server. `nexus-workbench login
+  --keyring` (or `NEXUS_KEYRING=1`) stores the token in the system keyring
+  instead; install `nexus-workbench[keyring]` for that. The `NEXUS_TOKEN`
+  environment variable, if set, is used before the saved token.
+- The token is only sent to the Workbench API over HTTPS and is never printed
+  in full. `doctor` shows only its last four characters.
+- Tokens expire (90 days by default). To revoke one, open Workbench, go to the
+  account menu, then "Connect an agent". `logout` only removes the copy on this
+  computer.
+
+## Settings
+
+| Variable | Use |
+|---|---|
+| `NEXUS_TOKEN` | A token to use instead of the saved one. |
+| `NEXUS_API_URL` | A different Workbench API address. Must start with `https://`. |
+| `NEXUS_KEYRING` | `1` to store new tokens in the system keyring. |
+
+## Licence
+
+Apache-2.0. See [LICENSE](LICENSE).

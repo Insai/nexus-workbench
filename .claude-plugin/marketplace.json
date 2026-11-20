@@ -1,0 +1,16 @@
+{
+  "name": "insai",
+  "owner": {
+    "name": "Insai"
+  },
+  "metadata": {
+    "description": "Plugins for Insai Workbench."
+  },
+  "plugins": [
+    {
+      "name": "nexus-workbench",
+      "source": "./",
+      "description": "Read-only access to an Insai Workbench workspace from Claude Code, plus local tools for EEG files. Early access. For research use only."
+    }
+  ]
+}

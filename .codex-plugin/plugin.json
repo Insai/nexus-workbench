@@ -1,0 +1,14 @@
+{
+  "name": "nexus-workbench",
+  "version": "0.1.0",
+  "description": "Read-only access to an Insai Workbench workspace (projects and recordings) from Codex, plus local tools for EEG files. Early access. For research use only.",
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Insai Workbench",
+    "shortDescription": "Read your Workbench recordings",
+    "longDescription": "Read-only access to an Insai Workbench workspace (projects and recordings), plus local tools for EEG files. Early access. For research use only. Not for clinical decision-making.",
+    "developerName": "Insai",
+    "websiteUrl": "https://insai.tech/workbench"
+  }
+}
