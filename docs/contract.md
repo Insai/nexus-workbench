@@ -308,8 +308,9 @@ are in `docs/tools.md`. Names are fixed:
 
 Rules for all of them:
 
-- They never read or return the EDF header's patient field, recording field or
-  start date and time.
+- They never parse, keep or return the EDF header's identity fields: patient
+  name, id and birth date, the recording field's free text, and the start date
+  and time.
 - A file is named in results by an opaque id derived from its content, never
   by its path or file name.
 - Results are summaries and counts. No tool returns raw signal samples.

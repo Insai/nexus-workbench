@@ -6,8 +6,9 @@ Reader
     supported (not 24-bit BDF).
 
     The header's patient field (bytes 8 to 88), recording field (88 to 168) and start date and
-    time (168 to 184) are never read: the reader seeks past them. Nothing in this module can
-    return them.
+    time (168 to 184) are never parsed, kept or returned: the header reader seeks past them.
+    Their bytes are still read when the whole file is hashed for its id. Annotation text is
+    decoded to count the annotations, and is never returned either.
 
 Writer
     Writes EDF+C (with one ``EDF Annotations`` signal) or plain EDF, 16-bit samples. It writes
@@ -125,9 +126,12 @@ def _parse_float(s: str, name: str, field: str) -> float:
     return v
 
 
-def read_header(path: str, file_size: int | None = None) -> Header:
-    """Read and validate the header of the EDF file at ``path`` (already checked to be a file)."""
-    name = display_name(path)
+def read_header(path: str, file_size: int | None = None, name: str | None = None) -> Header:
+    """Read and validate the header of the EDF file at ``path`` (already checked to be a file).
+
+    ``name`` is the file's name as the caller wrote it, for messages.
+    """
+    name = name or display_name(path)
     size = os.stat(path).st_size if file_size is None else file_size
     if size < 256:
         raise _bad(name, "the file is shorter than an EDF header")
@@ -135,7 +139,7 @@ def read_header(path: str, file_size: int | None = None) -> Header:
         with open(path, "rb") as f:
             version = f.read(8)
             # Bytes 8 to 184 hold the patient field, the recording field and the start date and
-            # time. They are skipped, never read.
+            # time. They are skipped here, never parsed or kept.
             f.seek(184)
             fixed = f.read(72)
             if version[:1] == b"\xff":
@@ -256,8 +260,8 @@ class EdfFile:
 
     def __init__(self, path: str) -> None:
         self.path = check_regular_file(path, "EDF file")
-        self.name = display_name(self.path)
-        self.header = read_header(self.path)
+        self.name = display_name(path)
+        self.header = read_header(self.path, name=self.name)
         self._f: io.BufferedReader | None = None
 
     def __enter__(self) -> EdfFile:

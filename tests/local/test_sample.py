@@ -39,8 +39,27 @@ def test_quality_finds_the_planted_stretches(night: dict[str, Any]) -> None:
         (p["railed"]["channel"], "railed"): (p["railed"]["startSec"], p["railed"]["endSec"]),
     }
     by = {c["label"]: c["counts"] for c in r["channels"]}
-    assert by["C4-M1"]["flat"] == 20 and by["E1-M2"]["railed"] == 10
+    n_flat = (p["flat"]["endSec"] - p["flat"]["startSec"]) // 30
+    n_railed = (p["railed"]["endSec"] - p["railed"]["startSec"]) // 30
+    assert by["C4-M1"]["flat"] == n_flat and by["E1-M2"]["railed"] == n_railed
     assert by["C3-M2"]["ok"] == 120 and by["Chin1-Chin2"]["ok"] == 120
+
+
+@pytest.mark.parametrize("hours", [0.5, 1.0])
+def test_planted_stretches_scale_with_the_night(tmp_path: Path, hours: float) -> None:
+    """On a short night the planted stretches shrink, so every channel stays ok overall."""
+    night = make_sample_night(str(tmp_path), hours=hours, seed=0)
+    r = api.check_signal_quality(night["edf"])
+    assert {c["label"]: c["overall"] for c in r["channels"]} == {
+        "C3-M2": "ok",
+        "C4-M1": "ok",
+        "E1-M2": "ok",
+        "Chin1-Chin2": "ok",
+    }
+    assert {(s["channel"], s["class"]) for s in r["badSpans"]} == {
+        ("C4-M1", "flat"),
+        ("E1-M2", "railed"),
+    }
 
 
 def _kappa(a: np.ndarray, b: np.ndarray) -> float:
@@ -83,7 +102,9 @@ def test_band_power_is_sensible(night: dict[str, Any]) -> None:
     by = {c["label"]: c for c in r["channels"]}
     assert set(by) == {"C3-M2", "C4-M1"}  # the EEG channels by default
     assert by["C3-M2"]["epochsUsed"] == 120
-    assert by["C4-M1"]["epochsUsed"] == 100  # the 20 flat epochs are left out
+    flat = night["planted"]["flat"]
+    n_flat = (flat["endSec"] - flat["startSec"]) // 30
+    assert by["C4-M1"]["epochsUsed"] == 120 - n_flat  # the flat epochs are left out
     for c in by.values():
         assert sum(c["relative"]) == pytest.approx(1.0, abs=1e-3)
         st = c["byStage"]

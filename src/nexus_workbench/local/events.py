@@ -13,7 +13,8 @@ whose onset is within ``tolerance_sec`` of its own.
 
 from __future__ import annotations
 
-from bisect import bisect_left, bisect_right
+import math
+from bisect import bisect_left
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
@@ -62,6 +63,151 @@ def _overlaps(p: Event, t: Event, tol: float, min_overlap: float) -> bool:
     return length == 0 and (a1 == a0 or b1 == b0)
 
 
+def _find(parent: list[int], k: int) -> int:
+    """Root of ``k`` in a skip list of used slots, with path compression."""
+    root = k
+    while parent[root] != root:
+        root = parent[root]
+    while parent[k] != root:
+        parent[k], k = root, parent[k]
+    return root
+
+
+class MatchTooLong(Exception):
+    """Matching would pass its work budget (see :meth:`_RefIndex.match`)."""
+
+
+class _RefIndex:
+    """Reference events grouped by duration class, each group sorted by position.
+
+    Position is the midpoint (overlap matching) or the onset (onset matching). A reference
+    event of duration at most ``L`` can only overlap a candidate whose midpoint is within
+    ``(candidate length + 2 * tolerance + L) / 2`` of its own (less ``min_overlap_sec``), so
+    each group is searched outward from the candidate's position up to that bound. Each group
+    is held in two orders, by position then index and by position then reverse index, so both
+    directions visit reference events in increasing (distance, index): the first one that
+    overlaps is the group's best, and the search stops there. Used events are skipped in near
+    constant time. This keeps matching close to linear in the number of events.
+    """
+
+    def __init__(self, truth: list[Event], require_overlap: bool, min_overlap_sec: float) -> None:
+        self.truth = truth
+        self.require_overlap = require_overlap
+        groups: dict[int, list[int]] = {}
+        for ti, t in enumerate(truth):
+            d = t.duration_sec if require_overlap else 0.0
+            if require_overlap and min_overlap_sec > 0 and d < min_overlap_sec:
+                continue  # too short to ever overlap a candidate by min_overlap_sec
+            key = -10_000 if d <= 0 else math.frexp(d)[1]
+            groups.setdefault(key, []).append(ti)
+        # Per group: longest duration, positions (sorted), ids by (position, index), ids by
+        # (position, reverse index), and each id's slot in those two orders.
+        self.groups: list[
+            tuple[float, list[float], list[int], list[int], dict[int, int], dict[int, int]]
+        ] = []
+        for key in sorted(groups):
+            members = groups[key]
+            up = sorted(members, key=lambda ti: (self._pos(truth[ti]), ti))
+            down = sorted(members, key=lambda ti: (self._pos(truth[ti]), -ti))
+            pos = [self._pos(truth[ti]) for ti in up]
+            longest = max(truth[ti].duration_sec for ti in members) if require_overlap else 0.0
+            self.groups.append(
+                (
+                    longest,
+                    pos,
+                    up,
+                    down,
+                    {ti: k for k, ti in enumerate(up)},
+                    {ti: k for k, ti in enumerate(down)},
+                )
+            )
+
+    def _pos(self, e: Event) -> float:
+        return (e.onset_sec + e.end_sec) / 2 if self.require_overlap else e.onset_sec
+
+    def match(
+        self,
+        pred: list[Event],
+        tolerance_sec: float,
+        min_overlap_sec: float,
+        budget: int | None = None,
+    ) -> tuple[MatchResult, int]:
+        """Greedy one-to-one match and the work it took (positions examined).
+
+        Raises :class:`MatchTooLong` once the work passes ``budget``. That only happens when
+        many reference events lie near candidates without overlapping them enough.
+        """
+        truth = self.truth
+        # Per group: right[k] is the first unused slot at or after k in the "up" order
+        # (len = none); left[k + 1] is the last unused slot at or before k in the "down"
+        # order (0 = none).
+        rights = [list(range(len(g[2]) + 1)) for g in self.groups]
+        lefts = [list(range(len(g[3]) + 1)) for g in self.groups]
+        used: set[int] = set()
+        pairs: list[tuple[int, int]] = []
+        work = len(truth) + len(pred)
+        order = sorted(range(len(pred)), key=lambda i: (pred[i].onset_sec, i))
+        inf = math.inf
+        for pi in order:
+            p = pred[pi]
+            pm = self._pos(p)
+            window = p.duration_sec + 2 * tolerance_sec
+            if self.require_overlap and min_overlap_sec > 0 and window < min_overlap_sec:
+                continue  # this candidate can never overlap anything by min_overlap_sec
+            best: tuple[float, int] | None = None
+            for g, (longest, pos, up, down, _, _) in enumerate(self.groups):
+                if self.require_overlap:
+                    bound = (window + longest) / 2 - min_overlap_sec
+                    bound = bound * (1 + 1e-9) + 1e-9
+                else:
+                    bound = tolerance_sec
+                right, left = rights[g], lefts[g]
+                n = len(up)
+                j = bisect_left(pos, pm)
+                r = _find(right, j)
+                lf = _find(left, j) - 1
+                work += 1
+                while True:
+                    kr = (abs(pm - pos[r]), up[r]) if r < n else (inf, 0)
+                    kl = (abs(pm - pos[lf]), down[lf]) if lf >= 0 else (inf, 0)
+                    key = min(kr, kl)
+                    if key[0] > bound or (best is not None and key >= best):
+                        break
+                    if key is kr:
+                        r = _find(right, r + 1)
+                    else:
+                        lf = _find(left, lf) - 1
+                    work += 1
+                    if budget is not None and work > budget:
+                        raise MatchTooLong
+                    d, ti = key
+                    if self.require_overlap:
+                        ok = _overlaps(p, truth[ti], tolerance_sec, min_overlap_sec)
+                    else:
+                        ok = d <= tolerance_sec
+                    if ok:
+                        best = key
+                        break
+            if best is not None:
+                ti = best[1]
+                for g, (_, _, _, _, at_up, at_down) in enumerate(self.groups):
+                    if ti in at_up:
+                        k = at_up[ti]
+                        rights[g][k] = k + 1
+                        k = at_down[ti]
+                        lefts[g][k + 1] = k
+                        break
+                used.add(ti)
+                pairs.append((pi, ti))
+        matched = {pi for pi, _ in pairs}
+        result = MatchResult(
+            pairs=pairs,
+            extra=[i for i in range(len(pred)) if i not in matched],
+            missed=[i for i in range(len(truth)) if i not in used],
+        )
+        return result, work
+
+
 def match_events(
     candidate: Sequence[object],
     reference: Sequence[object],
@@ -69,47 +215,14 @@ def match_events(
     tolerance_sec: float = 0.0,
     min_overlap_sec: float = 0.0,
     require_overlap: bool = True,
+    max_work: int | None = None,
 ) -> MatchResult:
-    """Greedy one-to-one match of ``candidate`` to ``reference``. See the module docstring."""
-    pred = as_events(candidate)
-    truth = as_events(reference)
-    order = sorted(range(len(pred)), key=lambda i: (pred[i].onset_sec, i))
-    by_onset = sorted(range(len(truth)), key=lambda i: (truth[i].onset_sec, i))
-    onsets = [truth[i].onset_sec for i in by_onset]
-    # A reference event reaches back at most its own duration, so the longest bounds the window.
-    reach = max((t.duration_sec for t in truth), default=0.0)
-    used: set[int] = set()
-    pairs: list[tuple[int, int]] = []
-    for pi in order:
-        p = pred[pi]
-        if require_overlap:
-            lo = bisect_left(onsets, p.onset_sec - tolerance_sec - reach)
-            hi = bisect_right(onsets, p.end_sec + tolerance_sec)
-        else:
-            lo = bisect_left(onsets, p.onset_sec - tolerance_sec)
-            hi = bisect_right(onsets, p.onset_sec + tolerance_sec)
-        best: tuple[float, int] | None = None
-        for ti in by_onset[lo:hi]:
-            if ti in used:
-                continue
-            t = truth[ti]
-            if require_overlap:
-                ok = _overlaps(p, t, tolerance_sec, min_overlap_sec)
-                key = abs((p.onset_sec + p.end_sec) / 2 - (t.onset_sec + t.end_sec) / 2)
-            else:
-                key = abs(p.onset_sec - t.onset_sec)
-                ok = key <= tolerance_sec
-            if ok and (best is None or (key, ti) < best):
-                best = (key, ti)
-        if best is not None:
-            used.add(best[1])
-            pairs.append((pi, best[1]))
-    matched = {pi for pi, _ in pairs}
-    return MatchResult(
-        pairs=pairs,
-        extra=[i for i in range(len(pred)) if i not in matched],
-        missed=[i for i in range(len(truth)) if i not in used],
-    )
+    """Greedy one-to-one match of ``candidate`` to ``reference``. See the module docstring.
+
+    With ``max_work``, raises :class:`MatchTooLong` once the matching work passes it.
+    """
+    index = _RefIndex(as_events(reference), require_overlap, min_overlap_sec)
+    return index.match(as_events(candidate), tolerance_sec, min_overlap_sec, max_work)[0]
 
 
 @dataclass
@@ -170,33 +283,53 @@ def shuffled_null(
     n_shuffles: int = 200,
     span_sec: float | None = None,
     seed: int = 0,
-    **match_kw: object,
+    max_work: int | None = None,
+    tolerance_sec: float = 0.0,
+    min_overlap_sec: float = 0.0,
+    require_overlap: bool = True,
 ) -> dict[str, float | int | None]:
     """Chance level for F1 and recall: shift every candidate onset by one random offset
     (circularly, within ``span_sec``) and match again, ``n_shuffles`` times.
 
     ``span_sec`` defaults to the latest event end in either list. Deterministic for a seed.
+    With ``max_work``, shuffles stop before the measured matching work (positions examined,
+    summed over shuffles) would pass it. The first shuffle may use the whole budget; if even it
+    would pass the budget, no shuffle runs and the means are ``None``. ``nShuffles`` is the
+    number actually run.
     """
     pred = as_events(candidate)
     truth = as_events(reference)
     if not pred or not truth or n_shuffles <= 0:
         return {"f1Mean": None, "f1P95": None, "recallMean": None, "nShuffles": 0}
     span = span_sec if span_sec is not None else max(e.end_sec for e in pred + truth)
+    index = _RefIndex(truth, require_overlap, min_overlap_sec)
     rng = np.random.default_rng(seed)
     f1s: list[float] = []
     recs: list[float] = []
-    for _ in range(n_shuffles):
+    spent = 0
+    for k in range(n_shuffles):
+        if max_work is not None and k > 0 and spent + spent / k > max_work:
+            break
         shift = float(rng.uniform(0, span)) if span > 0 else 0.0
         moved = [
             Event((e.onset_sec + shift) % span if span > 0 else e.onset_sec, e.duration_sec)
             for e in pred
         ]
-        s = score_events(moved, truth, **match_kw)
-        f1s.append(s.f1 or 0.0)
-        recs.append(s.recall or 0.0)
+        left = None if max_work is None else max_work - spent
+        try:
+            mr, work = index.match(moved, tolerance_sec, min_overlap_sec, left)
+        except MatchTooLong:
+            break
+        spent += work
+        tp = len(mr.pairs)
+        precision, recall = tp / len(moved), tp / len(truth)
+        f1s.append(f1_score(precision, recall))
+        recs.append(recall)
+    if not f1s:
+        return {"f1Mean": None, "f1P95": None, "recallMean": None, "nShuffles": 0}
     return {
         "f1Mean": float(np.mean(f1s)),
         "f1P95": float(np.percentile(f1s, 95)),
         "recallMean": float(np.mean(recs)),
-        "nShuffles": n_shuffles,
+        "nShuffles": len(f1s),
     }

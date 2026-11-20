@@ -53,7 +53,16 @@ def _hnorm(tok: str) -> str:
 
 
 def _is_int(s: str) -> bool:
-    return re.fullmatch(r"[+-]?\d+", s) is not None
+    # Capped in length so int() never meets a number too long to convert.
+    return re.fullmatch(r"[+-]?\d{1,18}", s) is not None
+
+
+def _non_finite(s: str) -> bool:
+    """True for text that reads as a number but not a finite one (nan, inf)."""
+    try:
+        return not math.isfinite(float(s))
+    except (ValueError, OverflowError):
+        return False
 
 
 def _stage_ok(tok: str) -> bool:
@@ -105,6 +114,11 @@ def parse_hypnogram(text: str, name: str = "the hypnogram") -> np.ndarray:
             stage_col = next(i for i, h in enumerate(head) if h in _STAGE_HEADERS)
             epoch_col = next((i for i, h in enumerate(head) if h in _EPOCH_HEADERS), None)
             rows = rows[1:]
+        elif any(_non_finite(c) and not _stage_ok(c) for c in rows[0][1]):
+            raise LocalToolError(
+                f"Line {rows[0][0]} of {name} holds a value that is not a finite number. Use "
+                "whole epoch numbers and sleep stages."
+            )
         elif not all(_stage_ok(c) or _is_int(c) or _is_number(c) for c in rows[0][1]):
             raise LocalToolError(
                 f"Line {rows[0][0]} of {name} looks like a header but has no 'stage' column. "
@@ -115,7 +129,7 @@ def parse_hypnogram(text: str, name: str = "the hypnogram") -> np.ndarray:
             if stage_col > 0 and all(
                 len(r) > 0 and _is_int(r[0].strip()) for _, r in rows if any(c for c in r)
             ):
-                epoch_col = 0
+                epoch_col = None if _onset_seconds(rows) else 0
         epochs = [] if epoch_col is not None else None
         for n, r in rows:
             if len(r) <= stage_col:
@@ -140,6 +154,10 @@ def parse_hypnogram(text: str, name: str = "the hypnogram") -> np.ndarray:
                     )
                 epochs.append(int(v))
 
+    if not raw:
+        raise LocalToolError(
+            f"{name} has a header but no epochs. A hypnogram has one sleep stage per epoch."
+        )
     ints = {int(_norm(t)) for _, t in raw if _is_int(_norm(t)) and _norm(t) != "-1"}
     four_is_n3 = 4 in ints and 5 in ints
     if 4 in ints and 5 not in ints:
@@ -181,10 +199,20 @@ def parse_hypnogram(text: str, name: str = "the hypnogram") -> np.ndarray:
     return np.asarray(codes, dtype=int)
 
 
+def _onset_seconds(rows: list[tuple[int, list[str]]]) -> bool:
+    """True when a headerless first column of whole numbers holds onset times in seconds: three
+    or more rows that climb in one constant step above 1 (such as 0, 30, 60). Such rows are read
+    in order as consecutive epochs, as with an ``onset_sec`` header; reading the column as epoch
+    numbers would leave most epochs unscored."""
+    firsts = [int(r[0].strip()) for _, r in rows if r and r[0].strip()]
+    steps = {b - a for a, b in zip(firsts, firsts[1:], strict=False)}
+    return len(firsts) > 2 and len(steps) == 1 and next(iter(steps)) > 1
+
+
 def _is_number(s: str) -> bool:
     try:
         return math.isfinite(float(s))
-    except ValueError:
+    except (ValueError, OverflowError):
         return False
 
 
@@ -195,6 +223,8 @@ def _num(v: object, what: str, where: str) -> float:
         x = float(v)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         raise LocalToolError(f"{where}: the {what} is not a number.") from None
+    except OverflowError:
+        raise LocalToolError(f"{where}: the {what} is not a finite number.") from None
     if not math.isfinite(x):
         raise LocalToolError(f"{where}: the {what} is not a finite number.")
     return x
@@ -232,6 +262,16 @@ def parse_events(text: str, name: str = "the event file") -> list[Event]:
             raise LocalToolError(
                 f"{name} looks like JSON but could not be parsed (line {exc.lineno}). Check it "
                 "is a list of objects with onset_sec and duration_sec."
+            ) from None
+        except RecursionError:
+            raise LocalToolError(
+                f"{name} is JSON nested too deeply to read. An event file is a flat list of "
+                "objects with onset_sec and duration_sec."
+            ) from None
+        except ValueError:
+            raise LocalToolError(
+                f"{name} holds a number with too many digits to read; it is not a number of "
+                "seconds. Check the onsets and durations."
             ) from None
         if isinstance(doc, dict) and isinstance(doc.get("events"), list):
             doc = doc["events"]
@@ -277,13 +317,15 @@ def parse_events(text: str, name: str = "the event file") -> list[Event]:
 
     lines = [(n + 1, ln.strip()) for n, ln in enumerate(text.split("\n"))]
     lines = [(n, ln) for n, ln in lines if ln and not ln.startswith("#")]
+    if not lines:
+        return []  # only comments: no events, as for an empty file
     d = _delim(lines[0][1])
     rows = [(n, [c.strip() for c in (ln.split(d) if d else ln.split())]) for n, ln in lines]
     col_on = 0
     col_du: int | None = 1
     col_end: int | None = None
     col_lab: int | None = 2
-    if not _is_number(rows[0][1][0]):
+    if not _is_number(rows[0][1][0]) and not _non_finite(rows[0][1][0]):
         head = [c.strip().strip('"').lower() for c in rows[0][1]]
         idx = {h: i for i, h in enumerate(head)}
         on = _pick(idx, _ONSET_KEYS)

@@ -46,7 +46,7 @@ Then open Claude Code or Codex and ask: "list my Workbench recordings".
 | `nexus-workbench logout` | Remove the saved token from this computer. |
 | `nexus-workbench whoami` | Show the workspace your token reads. |
 | `nexus-workbench recordings` | List recordings (`--project`, `--limit`, `--cursor`, `--json`). |
-| `nexus-workbench sample` | Write a synthetic sample night to try the local tools on (`--out`, `--hours`, `--seed`). |
+| `nexus-workbench sample` | Write a synthetic sample night to try the local tools on (`--out`, `--hours`, `--seed`, `--force`). |
 | `nexus-workbench qc PATH` | Describe a local EDF file and check its signal quality (`--json` for the raw results). |
 | `nexus-workbench doctor` | Check the install, the sign-in and the agent registrations. |
 | `nexus-workbench mcp` | Run the MCP server on stdio. Your agent starts this; you do not need to. |
@@ -107,8 +107,9 @@ recording:
 nexus-workbench sample --out ./nexus-sample --hours 8
 ```
 
-This writes `sample_night.edf`, two hypnograms and two event files. Check the
-EDF from the terminal:
+This writes `sample_night.edf`, two hypnograms and two event files. If sample
+files are already in the folder it stops and changes nothing; add `--force` to
+replace them. Check the EDF from the terminal:
 
 ```sh
 nexus-workbench qc ./nexus-sample/sample_night.edf
@@ -138,8 +139,9 @@ In Claude Code or Codex, ask for example:
   `ch1`, `ch2` and so on. A recording you are blinded on comes back without
   stage, event or mark counts.
 - A token sees what its owner sees in Workbench and never more.
-- The local tools never read or return an EDF file's patient field, recording
-  field or start date and time, and never return raw signal samples. Files are
+- The local tools never parse, keep or return an EDF file's identity fields
+  (patient name, id, birth date, the recording's free text, the start date and
+  time), and never return raw signal samples. Files are
   named by an id made from their content, not by their path.
 - Tokens are stored in a file only you can read (permissions `600`) in your
   user config folder, one per Workbench server. `nexus-workbench login

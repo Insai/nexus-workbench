@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -15,11 +16,15 @@ from nexus_workbench.local.labels import guess_type, safe_label
 
 from .conftest import write_test_edf
 
+#: The result size bound docs/tools.md states for one copy of a result (compact JSON, as the
+#: MCP server sends its text copy): 55,000 characters.
+BOUND = 55_000
+
 FAKE = ("DOE", "JANE", "1971", "02.03.71", "13.14.15", "CLINIC", "SMITH")
 
 
 def _dump(r: dict[str, Any]) -> str:
-    return json.dumps(r, allow_nan=False)
+    return json.dumps(r, allow_nan=False, separators=(",", ":"), ensure_ascii=False)
 
 
 def _all_outputs(night: dict[str, Any]) -> list[dict[str, Any]]:
@@ -159,8 +164,7 @@ def test_outputs_stay_small_for_a_long_wide_file(long_file: tuple[str, str]) -> 
     assert len(outs["power"]["channels"]) == 32
     for name, r in outs.items():
         size = len(_dump(r))
-        # About 4 characters per token: 15,000 tokens is about 60,000 characters.
-        assert size < 40_000, (name, size)
+        assert size < BOUND, (name, size)
 
 
 def test_errors_are_for_people(night: dict[str, Any], tmp_path: Path) -> None:
@@ -215,3 +219,116 @@ def test_label_filter_and_shuffle_reduction(night: dict[str, Any]) -> None:
     assert r["reference"] == 0 and r["candidate"] == 0 and r["f1"] is None
     r = api.compare_events(night["eventsReference"], night["eventsCandidate"], n_shuffles=2000)
     assert r["shuffledNull"]["nShuffles"] <= 2000
+
+
+def test_home_folder_and_user_name_never_reach_a_message(
+    night: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "someone-private"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    edf, hyp, ev = night["edf"], night["hypnogram"], night["eventsReference"]
+    calls = []
+    for p in ("~", "~/", "~/missing.edf"):
+        calls += [
+            lambda p=p: api.inspect_edf(p),
+            lambda p=p: api.check_signal_quality(p),
+            lambda p=p: api.compute_band_power(p),
+            lambda p=p: api.compute_band_power(edf, hypnogram_path=p),
+            lambda p=p: api.compare_hypnograms(p, hyp),
+            lambda p=p: api.compare_events(ev, p),
+        ]
+    for fn in calls:
+        with pytest.raises(LocalToolError) as exc:
+            fn()
+        msg = str(exc.value)
+        assert "someone-private" not in msg and str(tmp_path) not in msg, msg
+    with pytest.raises(LocalToolError, match="~ is a folder"):
+        api.inspect_edf("~")
+
+
+def test_nul_byte_in_a_path_is_a_plain_error(night: dict[str, Any]) -> None:
+    with pytest.raises(LocalToolError, match="could not be opened"):
+        api.inspect_edf("bad\x00name.edf")
+    with pytest.raises(LocalToolError, match="could not be opened"):
+        api.compare_events("bad\x00name.csv", night["eventsCandidate"])
+
+
+def test_messages_use_an_before_edf_and_event(tmp_path: Path) -> None:
+    fifo = tmp_path / "pipe"
+    os.mkfifo(fifo)
+    with pytest.raises(LocalToolError, match="Pass an EDF file saved on disk"):
+        api.inspect_edf(str(fifo))
+    with pytest.raises(LocalToolError, match="Pass an event file saved on disk"):
+        api.compare_events(str(fifo), str(fifo))
+
+
+def test_position_error_counts_only_data_channels(tmp_path: Path) -> None:
+    rng = np.random.default_rng(0)
+    p = write_test_edf(tmp_path / "two.edf", [rng.normal(0, 10, 3000)] * 2, 100)
+    with pytest.raises(LocalToolError, match="Positions run from 1 to 2;"):
+        api.check_signal_quality(str(p), channels=[3])
+
+
+def _make_discontinuous(path: Path) -> None:
+    raw = bytearray(path.read_bytes())
+    assert raw[192:197] == b"EDF+C"
+    raw[192:197] = b"EDF+D"
+    path.write_bytes(bytes(raw))
+
+
+def test_discontinuous_edf_is_described_but_not_analysed(tmp_path: Path) -> None:
+    rng = np.random.default_rng(0)
+    p = write_test_edf(tmp_path / "d.edf", [rng.normal(0, 10, 6000)], 100, ["C3-M2"])
+    _make_discontinuous(p)
+    info = api.inspect_edf(str(p))
+    assert info["format"] == "EDF+D" and info["discontinuous"] is True
+    for fn in (api.check_signal_quality, api.compute_band_power):
+        with pytest.raises(LocalToolError, match="Discontinuous recordings .* not supported yet"):
+            fn(str(p))
+
+
+def test_band_count_is_capped_and_the_largest_case_stays_under_the_bound(
+    long_file: tuple[str, str],
+) -> None:
+    edf, hyp = long_file
+    nine = {f"band_{k}": [k * 0.4 + 0.1, k * 0.4 + 0.5] for k in range(9)}
+    with pytest.raises(LocalToolError, match="At most 8 bands"):
+        api.compute_band_power(edf, bands=nine)
+    # Eight bands with the longest allowed names, all reaching above the 4 Hz Nyquist limit of
+    # this 8 Hz file, so bandsAboveNyquist is as long as it gets.
+    widest = {f"b{k}" + "x" * 22: [0.5 + k * 0.4, 30.0] for k in range(8)}
+    r = api.compute_band_power(edf, hypnogram_path=hyp, bands=widest)
+    assert len(r["channels"]) == 32 and all("byStage" in c for c in r["channels"])
+    assert all(len(c["bandsAboveNyquist"]) == 8 for c in r["channels"])
+    assert len(_dump(r)) < BOUND, len(_dump(r))
+
+    # The same layout with every value at its longest printed form: 16-character labels,
+    # six-digit epoch counts, absolute powers like 1.234e-05 and relative powers like 0.1234,
+    # and the longest skipped list.
+    def widen(stats: dict[str, Any]) -> None:
+        stats["absolute"] = [1.234e-05] * len(stats["absolute"])
+        stats["relative"] = [0.1234] * len(stats["relative"])
+
+    for c in r["channels"]:
+        c["label"], c["type"] = "x" * 16, "other"
+        c["epochsTotal"] = c["epochsUsed"] = 199_999
+        widen(c)
+        for st in c["byStage"].values():
+            st["epochs"] = 199_999
+            widen(st)
+    reason = "unit is not a voltage (it is " + "x" * 8 + "), so band power does not apply"
+    r["skipped"] = [{"index": 100 + k, "label": "x" * 16, "reason": reason} for k in range(20)]
+    assert len(_dump(r)) < BOUND, len(_dump(r))
+
+
+def test_file_names_in_messages_are_plain_text(tmp_path: Path) -> None:
+    bad = str(tmp_path / "a\x1b[2Jb\ncd\x07.edf")
+    with pytest.raises(LocalToolError) as exc:
+        api.inspect_edf(bad)
+    msg = str(exc.value)
+    assert "\x1b" not in msg and "\n" not in msg and "\x07" not in msg
+    assert msg.startswith("a [2Jb cd .edf was not found")
+    with pytest.raises(LocalToolError) as exc:
+        api.inspect_edf(str(tmp_path / ("x" * 250 + ".edf")))
+    assert len(str(exc.value)) < 320

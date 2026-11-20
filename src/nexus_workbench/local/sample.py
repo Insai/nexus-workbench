@@ -20,6 +20,14 @@ from .staging import STAGES
 
 FS = 100
 EPOCH_SEC = 30
+#: The files :func:`make_sample_night` writes.
+FILE_NAMES = (
+    "sample_night.edf",
+    "sample_hypnogram.csv",
+    "sample_hypnogram_scorer2.txt",
+    "sample_events_reference.csv",
+    "sample_events_candidate.json",
+)
 LABELS = ("C3-M2", "C4-M1", "E1-M2", "Chin1-Chin2")
 _W, _N1, _N2, _N3, _R = range(5)
 
@@ -36,8 +44,11 @@ _EYE = (25.0, 15.0, 3.0, 3.0, 40.0)
 #: Chin EMG (10 to 45 Hz), RMS µV per stage.
 _CHIN = (15.0, 8.0, 5.0, 4.0, 1.5)
 
+#: Planted flat and railed stretches on the default 8 hour night (960 epochs). They scale with
+#: the night's length, so they stay about 2 % and 1 % of it and never make a channel suspect.
 FLAT_EPOCHS = 20
 RAILED_EPOCHS = 10
+_DEFAULT_EPOCHS = 960
 UNSCORED_EPOCHS_B = 2
 DISAGREE_FRACTION = 0.15
 CANDIDATE_HIT_FRACTION = 0.8
@@ -125,12 +136,16 @@ def make_sample_night(out_dir: str, hours: float = 8.0, seed: int = 0) -> dict[s
         rows[0][a:b] += burst
         rows[1][a:b] += 0.9 * burst
 
+    n_flat = max(1, int(FLAT_EPOCHS * n_ep / _DEFAULT_EPOCHS + 0.5))
+    n_railed = max(1, int(RAILED_EPOCHS * n_ep / _DEFAULT_EPOCHS + 0.5))
     f0 = int(round(0.25 * n_ep))
     r0 = int(round(0.6 * n_ep))
     spe = EPOCH_SEC * FS
-    rows[1][f0 * spe : (f0 + FLAT_EPOCHS) * spe] = 0.0  # a dead contact
-    seg = slice(r0 * spe, (r0 + RAILED_EPOCHS) * spe)
-    rows[2][seg] = 3000.0 * np.sin(2 * np.pi * 1.0 * t[seg])  # clipped at the ±500 µV range
+    rows[1][f0 * spe : (f0 + n_flat) * spe] = 0.0  # a dead contact
+    seg = slice(r0 * spe, (r0 + n_railed) * spe)
+    # Clipped at the ±500 µV range for about 37 % of each epoch: railed, while the clipped
+    # samples stay under 1 % of the channel even on the shortest night.
+    rows[2][seg] = 600.0 * np.sin(2 * np.pi * 1.0 * t[seg])
 
     signals = [
         OutSignal(LABELS[0], rows[0], FS, "uV", -500.0, 500.0),
@@ -209,12 +224,12 @@ def make_sample_night(out_dir: str, hours: float = 8.0, seed: int = 0) -> dict[s
             "flat": {
                 "channel": LABELS[1],
                 "startSec": f0 * EPOCH_SEC,
-                "endSec": (f0 + FLAT_EPOCHS) * EPOCH_SEC,
+                "endSec": (f0 + n_flat) * EPOCH_SEC,
             },
             "railed": {
                 "channel": LABELS[2],
                 "startSec": r0 * EPOCH_SEC,
-                "endSec": (r0 + RAILED_EPOCHS) * EPOCH_SEC,
+                "endSec": (r0 + n_railed) * EPOCH_SEC,
             },
             "stagesA": stages.tolist(),
             "stagesB": b_codes.tolist(),

@@ -16,6 +16,7 @@ from typing import Any
 
 import numpy as np
 
+from ..client import safe_text
 from .errors import LocalToolError
 
 #: Text inputs (hypnograms, event lists) larger than this are refused.
@@ -29,11 +30,23 @@ _ID_CACHE_SIZE = 32
 
 
 def display_name(path: str) -> str:
-    """The base name of what the caller passed, for error messages only."""
+    """The base name of what the caller passed, for error messages only.
+
+    Taken from the path as written, before ``~`` is expanded, so a message never names the
+    home folder or the user unless the caller wrote them. Control characters become spaces
+    and the name is cut to 200 characters.
+    """
     if not isinstance(path, str):
         return "the file"
-    base = os.path.basename(path.rstrip("/\\"))
+    base = os.path.basename(path.strip().rstrip("/\\")).replace("\x00", "")
+    # Plain one-line text, as for server text: no escape sequences or newlines reach a terminal.
+    base = " ".join(safe_text(base).split())
     return base or "the file"
+
+
+def _a(what: str) -> str:
+    """``what`` with its article: "an EDF file", "an event file", "a hypnogram"."""
+    return f"{'an' if what[:1].lower() in 'aeiou' else 'a'} {what}"
 
 
 def check_regular_file(path: object, what: str = "file") -> str:
@@ -44,9 +57,9 @@ def check_regular_file(path: object, what: str = "file") -> str:
     """
     if not isinstance(path, str) or not path.strip():
         raise LocalToolError(f"No {what} path was given. Pass the path to the {what} as text.")
-    p = os.path.expanduser(path.strip())
-    name = display_name(p)
+    name = display_name(path)
     try:
+        p = os.path.expanduser(path.strip())
         st = os.stat(p)
     except FileNotFoundError:
         raise LocalToolError(
@@ -55,6 +68,11 @@ def check_regular_file(path: object, what: str = "file") -> str:
     except PermissionError:
         raise LocalToolError(
             f"{name} could not be opened: permission denied. Check the file's permissions."
+        ) from None
+    except ValueError:  # a NUL byte in the path
+        raise LocalToolError(
+            f"{name} could not be opened: the path holds a character that is not allowed in "
+            "paths. Check the path."
         ) from None
     except OSError as exc:
         if exc.errno == errno.ELOOP:
@@ -69,7 +87,7 @@ def check_regular_file(path: object, what: str = "file") -> str:
         raise LocalToolError(f"{name} is a folder, not a file. Pass the path to one {what}.")
     if not stat.S_ISREG(st.st_mode):
         raise LocalToolError(
-            f"{name} is not a regular file (it is a device, pipe or socket). Pass a {what} "
+            f"{name} is not a regular file (it is a device, pipe or socket). Pass {_a(what)} "
             "saved on disk."
         )
     return p
@@ -81,7 +99,7 @@ def read_text_file(path: str, what: str) -> tuple[str, str]:
     Refuses files over :data:`TEXT_CAP_BYTES` and files that are not UTF-8 or Latin-1 text.
     """
     p = check_regular_file(path, what)
-    name = display_name(p)
+    name = display_name(path)
     size = os.stat(p).st_size
     if size > TEXT_CAP_BYTES:
         raise LocalToolError(
@@ -94,7 +112,9 @@ def read_text_file(path: str, what: str) -> tuple[str, str]:
     except OSError:
         raise LocalToolError(f"{name} could not be read. Check the file's permissions.") from None
     if b"\x00" in raw:
-        raise LocalToolError(f"{name} is not a text file. A {what} must be plain text or CSV.")
+        raise LocalToolError(
+            f"{name} is not a text file. {_a(what).capitalize()} must be plain text or CSV."
+        )
     try:
         text = raw.decode("utf-8-sig")
     except UnicodeDecodeError:

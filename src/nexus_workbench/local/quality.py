@@ -5,21 +5,27 @@ would hide constant runs). They are default thresholds, not tuned for any device
 
 Per epoch, worst class wins:
 
-* ``railed``: peak-to-peak above :data:`SATURATED_PTP_UV`; or a quarter or more of the samples
-  sit on the channel's own minimum or maximum (within :data:`EXTREME_TOL` of its range); or the
-  epoch is flat, or holds a constant run of :data:`CONSTANT_RUN_SEC` or more, at a rail level
-  (at least :data:`RAIL_LEVEL_UV` from zero, or at the file's digital limit).
+* ``railed``: peak-to-peak above :data:`SATURATED_PTP_UV` (EEG and EOG only); or a quarter or
+  more of the samples sit on the channel's own minimum or maximum (within :data:`EXTREME_TOL` of
+  its range); or the epoch is flat, or holds a constant run of :data:`CONSTANT_RUN_SEC` or more,
+  at a rail level (at least :data:`RAIL_LEVEL_UV` from zero, or at the file's digital limit).
 * ``flat``: standard deviation below :data:`FLAT_STD_UV` at a level that is not a rail (a dead or
   zero-filled contact).
 * ``suspect``: a constant run of :data:`CONSTANT_RUN_SEC` or more; or more than
-  :data:`SUSPECT_EXTREME_FRAC` of samples on the channel's extremes; or RMS above
-  :data:`SUSPECT_RMS_UV`.
+  :data:`SUSPECT_EXTREME_FRAC` of samples on the channel's extremes; or RMS about the epoch
+  mean (the standard deviation, so a DC offset does not count) above :data:`SUSPECT_RMS_UV`
+  (EEG and EOG only).
 * ``ok``: none of the above.
+
+The two amplitude rules (peak-to-peak and RMS) are set for EEG and EOG. They are not applied
+to ECG, where R peaks reach several millivolts, nor to EMG, where chin and leg bursts are
+large by nature, nor to channels whose type cannot be told from the label. Flat, rail,
+constant-run and extremes rules apply to every channel.
 
 Per channel, an overall class for the whole recording: ``railed`` (railed throughout),
 ``flat`` (flat throughout), ``suspect`` (more than :data:`SUSPECT_BAD_EPOCH_FRAC` of epochs
-saturated, flat or holding a constant run, or more than :data:`SUSPECT_EXTREME_FRAC` of all
-samples on the extremes) or ``ok``.
+classed anything but ``ok``, or more than :data:`SUSPECT_EXTREME_FRAC` of all samples on the
+extremes) or ``ok``. So a channel is never ``ok`` overall when none of its epochs is.
 """
 
 from __future__ import annotations
@@ -44,8 +50,10 @@ SUSPECT_EXTREME_FRAC = 0.01
 RAILED_EXTREME_FRAC = 0.25
 #: A flat stretch or constant run held at least this far from 0 µV is a rail, not a dead contact.
 RAIL_LEVEL_UV = 1000.0
-#: An epoch with RMS above this is suspect (µV).
+#: An epoch with RMS about its mean (its standard deviation) above this is suspect (µV).
 SUSPECT_RMS_UV = 250.0
+#: Channel types the amplitude rules (peak-to-peak and RMS) apply to.
+AMPLITUDE_RULE_TYPES = ("eeg", "eog")
 #: A channel with more than this share of bad epochs is suspect overall.
 SUSPECT_BAD_EPOCH_FRAC = 0.10
 
@@ -63,6 +71,11 @@ THRESHOLDS: dict[str, float] = {
     "suspectRmsUv": SUSPECT_RMS_UV,
     "suspectBadEpochFraction": SUSPECT_BAD_EPOCH_FRAC,
 }
+
+
+def amplitude_rules_apply(channel_type: str) -> bool:
+    """Whether the peak-to-peak and RMS rules apply to a channel of this type."""
+    return channel_type in AMPLITUDE_RULE_TYPES
 
 
 def _longest_runs(x: np.ndarray, at_limit: np.ndarray | None, thr: int) -> tuple[np.ndarray, ...]:
@@ -108,11 +121,14 @@ def epoch_evidence(
     lo: float,
     hi: float,
     at_limit: np.ndarray | None = None,
+    *,
+    amplitude_rules: bool = True,
 ) -> EpochEvidence:
     """Classify each row of ``x_uv`` (shape ``(n_epochs, samples_per_epoch)``, µV).
 
     ``lo`` and ``hi`` are the channel's minimum and maximum over the whole recording.
     ``at_limit`` marks samples at the file's digital minimum or maximum, when known.
+    ``amplitude_rules`` turns the peak-to-peak and RMS rules on (EEG and EOG) or off.
     """
     x = np.asarray(x_uv, dtype=np.float64)
     if x.ndim != 2 or x.shape[1] == 0:
@@ -120,7 +136,6 @@ def epoch_evidence(
     spe = x.shape[1]
     std = x.std(axis=1)
     ptp = x.max(axis=1) - x.min(axis=1)
-    rms = np.sqrt(np.mean(x * x, axis=1))
     level = x.mean(axis=1)
     thr = max(1, int(round(CONSTANT_RUN_SEC * fs)))
     max_run, rail_run = _longest_runs(x, at_limit, thr)
@@ -132,14 +147,15 @@ def epoch_evidence(
         ext_count = np.zeros(x.shape[0], dtype=np.int64)
     ext_frac = ext_count / spe
 
-    sat = ptp > SATURATED_PTP_UV
+    sat = ptp > SATURATED_PTP_UV if amplitude_rules else np.zeros(x.shape[0], dtype=bool)
+    loud = std > SUSPECT_RMS_UV if amplitude_rules else np.zeros(x.shape[0], dtype=bool)
     is_flat = std < FLAT_STD_UV
     run = max_run >= thr
     all_at_limit = at_limit.all(axis=1) if at_limit is not None else np.zeros_like(is_flat)
     flat_rail = is_flat & ((np.abs(level) >= RAIL_LEVEL_UV) | all_at_limit)
 
     cls = np.full(x.shape[0], OK, dtype=np.int8)
-    cls[run | (ext_frac > SUSPECT_EXTREME_FRAC) | (rms > SUSPECT_RMS_UV)] = SUSPECT
+    cls[run | (ext_frac > SUSPECT_EXTREME_FRAC) | loud] = SUSPECT
     cls[is_flat & ~flat_rail] = FLAT
     cls[sat | flat_rail | rail_run | (ext_frac >= RAILED_EXTREME_FRAC)] = RAILED
     return EpochEvidence(
@@ -203,8 +219,8 @@ class ChannelQuality:
             return "railed"
         if all_flat:
             return "flat"
-        bad = sat | flat | run
-        if ext_total > SUSPECT_EXTREME_FRAC or bad.sum() / n > SUSPECT_BAD_EPOCH_FRAC:
+        not_ok = self.classes != OK
+        if ext_total > SUSPECT_EXTREME_FRAC or not_ok.sum() / n > SUSPECT_BAD_EPOCH_FRAC:
             return "suspect"
         return "ok"
 
@@ -225,7 +241,9 @@ class ChannelQuality:
         return out
 
 
-def assess(x_uv: np.ndarray, fs: float, epoch_sec: float = EPOCH_SEC) -> dict[str, Any]:
+def assess(
+    x_uv: np.ndarray, fs: float, epoch_sec: float = EPOCH_SEC, *, amplitude_rules: bool = True
+) -> dict[str, Any]:
     """Quality of a whole 1-D signal in µV held in memory (for tests and small inputs).
 
     Returns the per-epoch classes, counts and the overall class (``None`` when the signal is
@@ -240,7 +258,7 @@ def assess(x_uv: np.ndarray, fs: float, epoch_sec: float = EPOCH_SEC) -> dict[st
         return {"overall": None, "classes": [], "counts": cq.counts()}
     cq.lo, cq.hi = float(finite.min()), float(finite.max())
     ep = np.where(np.isfinite(x[: n * spe]), x[: n * spe], 0.0).reshape(n, spe)
-    cq.add(epoch_evidence(ep, fs, cq.lo, cq.hi))
+    cq.add(epoch_evidence(ep, fs, cq.lo, cq.hi, amplitude_rules=amplitude_rules))
     ev = cq.parts[0]
     return {
         "overall": cq.overall(),

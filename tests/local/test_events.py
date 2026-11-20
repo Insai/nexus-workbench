@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import random
+import time
+from pathlib import Path
 
 import pytest
 
+from nexus_workbench.local import api
 from nexus_workbench.local.events import (
     Event,
     _overlaps,
@@ -113,3 +116,88 @@ def test_shuffled_null_is_deterministic_and_below_a_perfect_match() -> None:
     assert a != c
     assert a["f1Mean"] < 1.0 and a["f1P95"] <= 1.0 and a["nShuffles"] == 100
     assert shuffled_null([], ref)["nShuffles"] == 0
+
+
+def test_matching_stays_quick_with_a_long_reference_event(tmp_path: Path) -> None:
+    """One reference event spans the night: matching must not become candidates times refs."""
+    rng = random.Random(1)  # noqa: S311 (test data, not security)
+    cand = tmp_path / "cand.csv"
+    cand.write_text("".join(f"{rng.uniform(0, 28790):.2f},5\n" for _ in range(2000)))
+    ref = tmp_path / "ref.csv"
+    ref.write_text("0,28800\n" + "".join(f"{rng.uniform(0, 28790):.2f},5\n" for _ in range(2000)))
+    t0 = time.perf_counter()
+    r = api.compare_events(str(ref), str(cand))
+    assert time.perf_counter() - t0 < 20
+    assert r["shuffledNull"]["nShuffles"] >= 1
+
+
+def test_matching_stays_quick_with_many_events_and_a_wide_tolerance(tmp_path: Path) -> None:
+    rng = random.Random(2)  # noqa: S311 (test data, not security)
+    cand = tmp_path / "cand.csv"
+    cand.write_text("".join(f"{rng.uniform(0, 28790):.2f},5\n" for _ in range(20_000)))
+    ref = tmp_path / "ref.csv"
+    ref.write_text("".join(f"{rng.uniform(0, 28790):.2f},5\n" for _ in range(20_000)))
+    t0 = time.perf_counter()
+    r = api.compare_events(str(ref), str(cand), tolerance_sec=3600)
+    assert time.perf_counter() - t0 < 20
+    null = r["shuffledNull"]
+    assert 1 <= null["nShuffles"] < 200 and null["reduced"] is True
+    assert r["matched"] > 19_000
+
+
+def test_shuffled_null_stops_at_the_work_bound() -> None:
+    ref = [Event(t, 2) for t in range(0, 6000, 6)]
+    full = shuffled_null(ref, ref, n_shuffles=50, span_sec=6000.0)
+    capped = shuffled_null(ref, ref, n_shuffles=50, span_sec=6000.0, max_work=20_000)
+    assert full["nShuffles"] == 50
+    assert 1 <= int(capped["nShuffles"] or 0) < 50
+    none = shuffled_null(ref, ref, n_shuffles=50, span_sec=6000.0, max_work=1)
+    assert none["nShuffles"] == 0 and none["f1Mean"] is None
+
+
+def test_onset_matcher_equals_all_pairs() -> None:
+    rng = random.Random(3)  # noqa: S311 (test data, not security)
+    for _ in range(200):
+        cand = [(rng.randint(0, 120) / 2, 1.0) for _ in range(rng.randint(0, 30))]
+        ref = [(rng.randint(0, 120) / 2, 2.0) for _ in range(rng.randint(0, 30))]
+        for tol in (0.0, 0.5, 3.0):
+            got = match_events(cand, ref, tolerance_sec=tol, require_overlap=False).pairs
+            p, t = as_events(cand), as_events(ref)
+            used: set[int] = set()
+            want = []
+            for pi in sorted(range(len(p)), key=lambda i: (p[i].onset_sec, i)):
+                best = None
+                for ti in range(len(t)):
+                    key = abs(p[pi].onset_sec - t[ti].onset_sec)
+                    if ti not in used and key <= tol and (best is None or (key, ti) < best):
+                        best = (key, ti)
+                if best is not None:
+                    used.add(best[1])
+                    want.append((pi, best[1]))
+            assert got == want
+
+
+def test_matching_stays_quick_with_many_identical_long_reference_events(tmp_path: Path) -> None:
+    rng = random.Random(4)  # noqa: S311 (test data, not security)
+    cand = tmp_path / "cand.csv"
+    cand.write_text("".join(f"{rng.uniform(0, 28790):.2f},5\n" for _ in range(20_000)))
+    ref = tmp_path / "ref.csv"
+    ref.write_text("0,28800\n" * 20_000)
+    t0 = time.perf_counter()
+    r = api.compare_events(str(ref), str(cand))
+    assert time.perf_counter() - t0 < 20
+    assert r["matched"] == 20_000
+
+
+def test_matching_that_would_take_too_long_is_a_plain_error(tmp_path: Path) -> None:
+    """Reference events near every candidate that never overlap it enough: refused, quickly."""
+    cand = tmp_path / "cand.csv"
+    cand.write_text("10000,5\n" * 20_000)
+    ref = tmp_path / "ref.csv"
+    ref.write_text(
+        "9000,2047\n" + "".join(f"{10187.5 + k * 1e-3:.3f},1025\n" for k in range(20_000))
+    )
+    t0 = time.perf_counter()
+    with pytest.raises(api.LocalToolError, match="would take too long"):
+        api.compare_events(str(ref), str(cand), min_overlap=5)
+    assert time.perf_counter() - t0 < 20

@@ -29,7 +29,8 @@ DEFAULT_BANDS: tuple[tuple[str, float, float], ...] = (
 )
 #: Welch segment length in seconds (shortened to the epoch when the epoch is shorter).
 WINDOW_SEC = 4.0
-MAX_BANDS = 12
+#: Custom bands per call; with 32 channels and a hypnogram this keeps the result small.
+MAX_BANDS = 8
 
 _NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,23}$")
 
@@ -71,7 +72,10 @@ def parse_bands(bands: object) -> list[Band]:
     if not items:
         raise LocalToolError("No bands were given. Leave bands out to use the defaults.")
     if len(items) > MAX_BANDS:
-        raise LocalToolError(f"At most {MAX_BANDS} bands can be computed in one call.")
+        raise LocalToolError(
+            f"At most {MAX_BANDS} bands can be computed in one call, so the result stays "
+            "small. Split the bands over several calls."
+        )
     out: list[Band] = []
     for name, lo, hi in items:
         if not isinstance(name, str) or not _NAME.match(name):

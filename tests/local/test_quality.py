@@ -143,3 +143,51 @@ def test_channels_in_other_units_are_converted_or_skipped(tmp_path: Path) -> Non
     q = write_test_edf(tmp_path / "pct.edf", [np.full(6000, 95.0)], 100, ["SpO2"], unit="%")
     with pytest.raises(LocalToolError, match="voltage"):
         api.check_signal_quality(str(q))
+
+
+def test_dc_offset_does_not_make_epochs_suspect(tmp_path: Path) -> None:
+    x = _eeg() + 300.0  # a 300 µV electrode offset on clean EEG
+    r = assess(x, FS)
+    assert r["overall"] == "ok" and r["counts"]["ok"] == N_EP
+    p = write_test_edf(tmp_path / "dc.edf", [x[: 100 * 300]], 100, ["C3-M2"], phys=1000.0)
+    q = api.check_signal_quality(str(p))
+    assert q["channels"][0]["counts"]["ok"] == 10
+    bp = api.compute_band_power(str(p))
+    assert bp["channels"][0]["epochsUsed"] == 10
+
+
+def test_overall_is_never_ok_when_no_epoch_is_ok() -> None:
+    rng = np.random.default_rng(9)
+    loud = np.clip(rng.normal(0, 300, SPE * N_EP), -950, 950)  # every epoch suspect (std)
+    r = assess(loud, FS)
+    assert r["counts"]["ok"] == 0
+    assert r["overall"] == "suspect"
+
+
+def _ecg(fs: int, seconds: int, seed: int = 0) -> np.ndarray:
+    """A synthetic ECG: 2.5 mV R peaks at 60 beats per minute on small noise."""
+    rng = np.random.default_rng(seed)
+    t = np.arange(fs * seconds) / fs
+    x = rng.normal(0, 10, t.size)
+    for beat in np.arange(0.5, seconds, 1.0):
+        x += 2500 * np.exp(-0.5 * ((t - beat) / 0.012) ** 2)  # R wave
+        x -= 300 * np.exp(-0.5 * ((t - beat - 0.04) / 0.015) ** 2)  # S wave
+    return x
+
+
+def test_ecg_r_peaks_are_not_railed(tmp_path: Path) -> None:
+    fs = 256
+    ecg = _ecg(fs, 300)
+    eeg = np.random.default_rng(1).normal(0, 15, fs * 300)
+    big = np.random.default_rng(2).normal(0, 15, fs * 300)
+    big[fs * 30 : fs * 60] += 2500 * np.sin(2 * np.pi * 1.0 * np.arange(fs * 30) / fs)
+    p = write_test_edf(
+        tmp_path / "ecg.edf", [ecg, eeg, big], fs, ["ECG", "C3-M2", "E1-M2"], phys=5000.0
+    )
+    r = api.check_signal_quality(str(p))
+    by = {c["label"]: c for c in r["channels"]}
+    assert by["ECG"]["type"] == "ecg"
+    assert by["ECG"]["counts"]["ok"] == 10 and by["ECG"]["overall"] == "ok"
+    assert by["C3-M2"]["counts"]["ok"] == 10
+    # The amplitude rules still apply to EOG: a 5 mV swing in epoch 2 is railed.
+    assert by["E1-M2"]["counts"]["railed"] == 1

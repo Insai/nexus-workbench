@@ -19,7 +19,7 @@ from . import quality as q
 from . import staging
 from .edf import EdfFile, Header
 from .errors import LocalToolError
-from .events import Event, score_events, shuffled_null
+from .events import Event, MatchTooLong, score_events, shuffled_null
 from .formats import parse_events, parse_hypnogram
 from .labels import guess_type, safe_label, safe_unit, to_microvolts
 from .report import content_id, display_name, json_safe, pct, read_text_file, rnd, sig
@@ -32,9 +32,17 @@ MAX_QUALITY_CHANNELS = 64
 MAX_POWER_CHANNELS = 32
 #: Bad spans returned by ``check_signal_quality``.
 MAX_SPANS = 20
-#: Shuffles times events is kept under this, so the null stays quick.
-MAX_SHUFFLE_WORK = 4_000_000
+#: Skipped (non-voltage) channels listed by ``check_signal_quality`` and ``compute_band_power``.
+MAX_SKIPPED = 20
+#: Matching work (event positions examined) allowed for the match itself; past it the call is
+#: refused, so a pathological pair of files cannot run for minutes.
+MAX_MATCH_WORK = 2_000_000
+#: Matching work summed over all shuffles is kept under this, so the null stays quick whatever
+#: the events look like.
+MAX_SHUFFLE_WORK = 2_000_000
 MAX_SHUFFLES = 2000
+#: The end of the message for a recording shorter than one epoch (the CLI swaps it for its own).
+SHORT_FILE_HINT = "Use a shorter epoch_sec or a longer recording."
 #: A hypnogram may run this many epochs past the end of the EDF (the extra ones are ignored).
 HYPNOGRAM_SLACK_EPOCHS = 2
 
@@ -79,6 +87,15 @@ def _as_list(channels: object) -> list[object]:
     )
 
 
+def _positions(signals: list[int]) -> str:
+    """Where the data channels are, in 1-based positions (the annotation signal is not one)."""
+    pos = [i + 1 for i in signals]
+    if pos == list(range(1, len(pos) + 1)):
+        return f"Positions run from 1 to {len(pos)}"
+    shown = ", ".join(str(k) for k in pos[:40]) + (", ..." if len(pos) > 40 else "")
+    return f"The data channels are at positions {shown}"
+
+
 def _select(h: Header, channels: object) -> list[int]:
     """0-based indices for ``channels`` (labels as ``inspect_edf`` shows them, ``ch<N>``, the
     file's own label, or 1-based positions)."""
@@ -92,8 +109,8 @@ def _select(h: Header, channels: object) -> list[int]:
             k = int(c) - 1
             if k not in shown:
                 raise LocalToolError(
-                    f"There is no data channel at position {int(c)}. Positions run from 1 to "
-                    f"{h.n_signals}; run inspect_edf to see them."
+                    f"There is no data channel at position {int(c)}. {_positions(signals)}; "
+                    "run inspect_edf to see them."
                 )
             out.append(k)
             continue
@@ -152,11 +169,22 @@ def _evidence(
     """Quality evidence for a block of digital samples, and the block in µV."""
     x = h.to_physical(i, d) * (_uv_scale(h, i) or 1.0)
     at_limit = (d == h.dig_min[i]) | (d == h.dig_max[i])
-    return q.epoch_evidence(x, h.fs(i), lo, hi, at_limit), x
+    amp = q.amplitude_rules_apply(guess_type(h.labels[i]))
+    return q.epoch_evidence(x, h.fs(i), lo, hi, at_limit, amplitude_rules=amp), x
 
 
 def _open_edf(path: object) -> EdfFile:
     return EdfFile(path)  # type: ignore[arg-type]
+
+
+def _need_continuous(edf: EdfFile) -> None:
+    """Refuse EDF+D: its records have gaps, and the epoch maths assumes they do not."""
+    if edf.header.variant == "EDF+D":
+        raise LocalToolError(
+            f"{edf.name} is a discontinuous EDF+D recording: its data records have gaps between "
+            "them. Discontinuous recordings are not supported yet by this tool; inspect_edf can "
+            "still describe the file. Export the recording as continuous EDF or EDF+C."
+        )
 
 
 def _need_epochs(edf: EdfFile, epoch_sec: float) -> int:
@@ -164,7 +192,7 @@ def _need_epochs(edf: EdfFile, epoch_sec: float) -> int:
     if n == 0:
         raise LocalToolError(
             f"{edf.name} is {edf.header.duration_sec:g} s long, shorter than one {epoch_sec:g} s "
-            "epoch. Use a shorter epoch_sec or a longer recording."
+            f"epoch. {SHORT_FILE_HINT}"
         )
     return n
 
@@ -244,6 +272,7 @@ def check_signal_quality(
     """Classify every epoch of every voltage channel as ok, suspect, flat or railed."""
     ep = _epoch_sec(epoch_sec)
     edf = _open_edf(path)
+    _need_continuous(edf)
     h = edf.header
     idx = h.signal_indices if channels is None else _select(h, channels)
     if not idx:
@@ -296,13 +325,13 @@ def check_signal_quality(
             "secondsNotInEpochs": rnd(h.duration_sec - n * ep, 3),
             "thresholds": q.THRESHOLDS,
             "channels": rows,
-            "skipped": skipped,
+            "skipped": skipped[:MAX_SKIPPED],
             "usablePercent": pct(ok_total, total),
             "allChannelsOkPercent": pct(int(all_ok.sum()), n),
             "badSpans": bad,
             "badSpansTotal": len(spans),
             "badSpansCap": MAX_SPANS,
-            "truncated": truncated or len(spans) > MAX_SPANS,
+            "truncated": truncated or len(spans) > MAX_SPANS or len(skipped) > MAX_SKIPPED,
             "channelsTruncated": truncated,
         }
     )
@@ -340,6 +369,7 @@ def compute_band_power(
     ep = _epoch_sec(epoch_sec)
     band_list = bp.parse_bands(bands)
     edf = _open_edf(path)
+    _need_continuous(edf)
     h = edf.header
     chosen = "as requested"
     if channels is None:
@@ -435,9 +465,9 @@ def compute_band_power(
             },
             "channelsChosen": chosen,
             "channels": rows,
-            "skipped": skipped,
+            "skipped": skipped[:MAX_SKIPPED],
             "hypnogram": hyp_info,
-            "truncated": truncated,
+            "truncated": truncated or len(skipped) > MAX_SKIPPED,
         }
     )
 
@@ -564,21 +594,26 @@ def compare_events(
                 "recording_hours and that onsets are in seconds from the start."
             )
     kw: dict[str, object] = {"tolerance_sec": tol, "min_overlap_sec": mo}
-    s = score_events(cand, ref, hours, **kw)
+    try:
+        s = score_events(cand, ref, hours, max_work=MAX_MATCH_WORK, **kw)
+    except MatchTooLong:
+        raise LocalToolError(
+            "Matching these events would take too long: many reference events lie close to "
+            "candidate events without overlapping them by min_overlap. Lower min_overlap or "
+            "tolerance_sec, or compare one label at a time."
+        ) from None
     shuffles = int(n_shuffles)
-    reduced = False
-    work = max(1, len(cand) + len(ref))
-    if shuffles * work > MAX_SHUFFLE_WORK:
-        shuffles = max(1, MAX_SHUFFLE_WORK // work)
-        reduced = True
     null = shuffled_null(
         cand,
         ref,
         n_shuffles=shuffles,
         span_sec=hours * 3600.0 if hours is not None else None,
         seed=int(seed),
-        **kw,
+        max_work=MAX_SHUFFLE_WORK,
+        tolerance_sec=tol,
+        min_overlap_sec=mo,
     )
+    reduced = bool(cand and ref) and int(null["nShuffles"] or 0) < shuffles
     return json_safe(
         {
             "fileIdReference": id_r,

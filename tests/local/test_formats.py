@@ -88,3 +88,54 @@ def test_events_json() -> None:
 def test_bad_events(text: str, match: str) -> None:
     with pytest.raises(LocalToolError, match=match):
         parse_events(text)
+
+
+@pytest.mark.parametrize(
+    ("text", "match"),
+    [
+        ("epoch,stage\n", "no epochs"),
+        ("stage\n", "no epochs"),
+        ("# only a comment\nepoch,stage\n", "no epochs"),
+        ("inf,2\n", "not a finite number"),
+        ("1" * 5000 + "\n", "not a sleep stage"),
+    ],
+)
+def test_hypnograms_that_used_to_raise_tracebacks(text: str, match: str) -> None:
+    with pytest.raises(LocalToolError, match=match):
+        parse_hypnogram(text)
+
+
+def test_headerless_onset_seconds_are_read_in_order() -> None:
+    text = "".join(f"{30 * k},{'W' if k < 10 else 'N2'}\n" for k in range(20))
+    assert parse_hypnogram(text).tolist() == [0] * 10 + [2] * 10
+    # Onsets that do not start at 0 are still one row per epoch, in order.
+    assert parse_hypnogram("30,W\n60,N1\n90,N2\n").tolist() == [0, 1, 2]
+    # With a header naming the column, the rows are read in order too.
+    assert parse_hypnogram("onset_sec,stage\n" + text).tolist() == [0] * 10 + [2] * 10
+    # A header that names the column as epoch numbers keeps the gaps.
+    assert len(parse_hypnogram("epoch,stage\n0,W\n30,W\n")) == 31
+    # Epoch numbers with gaps that are not a constant step are still epoch numbers.
+    assert parse_hypnogram("0,W\n2,N2\n").tolist() == [0, -1, 2]
+    assert parse_hypnogram("1,W\n2,N2\n3,N3\n").tolist() == [0, 2, 3]
+
+
+@pytest.mark.parametrize(
+    ("text", "match"),
+    [
+        ("[" * 100_000 + "]" * 100_000, "nested too deeply"),
+        ('[{"onset_sec": ' + "9" * 5000 + "}]", "not a number"),
+        ('[{"onset_sec": 1e400}]', "not a finite number"),
+        ("[[" + "9" * 400 + ", 1]]", "not a finite number"),
+        ("nan,2\n", "not a finite number"),
+        ("inf,2\n", "not a finite number"),
+    ],
+)
+def test_events_that_used_to_raise_tracebacks(text: str, match: str) -> None:
+    with pytest.raises(LocalToolError, match=match):
+        parse_events(text)
+
+
+def test_event_file_with_only_comments_holds_no_events() -> None:
+    # Same as an empty file: no events (a detector that found nothing writes this).
+    assert parse_events("# no events\n# at all\n") == []
+    assert parse_events("onset_sec,duration_sec\n") == []
