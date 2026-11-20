@@ -55,7 +55,8 @@ Workbench or on the researcher's computer.
    configuration.
 3. Sign-in needs a token. The researcher makes one on the Connect an agent page in
    Workbench (account menu). The token is shown once. Then they run
-   `nexus-workbench login --token` and paste it at the prompt.
+   `nexus-workbench login --token` and paste it at the prompt. Signing in through the
+   browser comes later; until then a token is the only way.
 4. Ask the researcher to run `nexus-workbench doctor`. It checks the install, the sign-in
    and the agent registrations, and shows only the last four characters of the token.
 5. A newly registered MCP server is usually picked up by a new agent session. If the tools
@@ -85,10 +86,11 @@ message, not the exact words; the wording can change between versions.
 | "not switched on for this workspace yet" | Agent access is off for this workspace. | See Early access. Stop. |
 | "Agent access is not available on this Workbench server yet" | The server does not offer agent access yet. | Stop and tell the researcher. Local tools still work. |
 | "does not exist in this workspace, or you cannot see it" | The id is not in this workspace, or they may not see it. | Re-list with `list_projects` or `list_recordings`; do not guess ids. |
-| "Too many requests to Workbench" | Too many calls. | Wait the number of seconds given (or a minute), then retry once. Each token allows 60 calls a minute; `list_recordings` allows 10 a minute. |
+| "Too many requests to Workbench" | Too many calls. | Wait the number of seconds given (or a minute), then retry once. Each token allows 60 calls a minute in all; `list_projects` allows 10 a minute and `list_recordings` 10 a minute. |
 | "Could not reach Workbench", "Workbench had a problem answering" | Network or server trouble. | Try once more later. If it persists, ask the researcher to run `nexus-workbench doctor`. |
 | "Workbench took too long to answer" | The server did not answer in time. | Retry once. If it happens again, check the connection. |
 | "Workbench did not accept the request" | An argument was refused, often a stale `cursor` when listing. | Check the arguments. When listing, start the list again without the `cursor`. |
+| "Invalid value for <argument>" | The call itself was wrong: an argument of the wrong type, missing, or out of range (for example `limit` above 100). Nothing reached Workbench. | Fix the named argument and call once more. |
 | "Something went wrong in the Workbench tools" | An unexpected error in the local tools. | Ask the researcher to run `nexus-workbench doctor`. |
 | "an answer this version does not understand" | The installed package is older than the server. | Tell the researcher; the message says how to update. |
 
@@ -97,8 +99,9 @@ Never retry a refusal in a loop.
 ## What the workspace tools return
 
 - `list_projects`: live projects with `recordingCount`.
-- `list_recordings`: one page, newest first. Pass `limit` (1 to 100) and the `nextCursor`
-  of the previous page as `cursor`. `nextCursor` is `null` on the last page. If
+- `list_recordings`: one page, newest first. Pass `project_id` (an id from
+  `list_projects`) for one project only, `limit` (1 to 100, default 50), and the
+  `nextCursor` of the previous page as `cursor`. `nextCursor` is `null` on the last page. If
   `truncated` is `true` the list is incomplete; say so when you report counts.
 - `get_recording`: one row plus `channels`, `stageMinutes`, `eventCounts` and
   `humanCounts`, each only when known and allowed.

@@ -70,7 +70,7 @@ this before any number, negative or verdict goes into a report.
 16. Look for the recorded value first. Before deriving a number, check whether the tool
     output already has it. When you read one key, read its neighbours: `epochsUsed` next
     to a band power, `epochsCompared` next to a kappa, `truncated` next to any list,
-    `reduced` next to a null.
+    `nShuffles` and `reduced` next to a null.
 17. A count is only as good as the tool that made it. A file the tool could not read is
     unread, not a file without the property. Rerun counts with the current tools before
     treating them as facts about the data.

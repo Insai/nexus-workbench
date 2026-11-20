@@ -32,7 +32,7 @@ else on the file.
 
 | Key | What to check |
 |---|---|
-| `format` | `EDF`, `EDF+C` or `EDF+D`. `EDF+D` has gaps: `durationSec` is recorded time, not the span of the night. Epoch-based results then do not map to clock time. |
+| `format` | `EDF`, `EDF+C` or `EDF+D`. `EDF+D` has gaps: `durationSec` is recorded time, not the span of the night. See EDF+D below. |
 | `durationSec` | Plausible for the study (a night, a nap, a short test). Divide by the epoch length (usually 30 s) to get the expected number of epochs for any hypnogram. |
 | `recordSec`, `nRecords` | Their product is `durationSec`. A very short `recordSec` is normal. |
 | `nChannels`, `channelsListed`, `truncated` | If `truncated` is `true`, only the first 128 channels are listed. Say so. |
@@ -44,6 +44,13 @@ else on the file.
 | `channels[].index` | The 1-based position in the file. Other tools accept the label, `ch<N>`, or this position. Positions can skip the EDF+ annotation signal. |
 | `annotations` | `present` and `count` only. Their text is never returned, so you cannot read scoring or events from them. |
 | `discontinuous` | `true` matches `EDF+D`. |
+
+   EDF+D: `inspect_edf` describes the file, but `check_signal_quality` and
+   `compute_band_power` refuse it with a plain message, because discontinuous recordings
+   are not supported yet. When `discontinuous` is `true`, stop after the intake and tell the
+   researcher. Do not guess where the gaps are, do not try to join the records yourself,
+   and do not call the other tools on it. The researcher can export the recording as
+   continuous EDF or EDF+C and give you that file.
 
 4. Write down the reference of each EEG channel when the label shows it (for example
    `C4-M1` is C4 against M1). Band power and quality depend on it.
@@ -57,19 +64,24 @@ else on the file.
 - Whether a hypnogram or event file exists for this night, its path, and its epoch length.
 - Whether `durationSec` matches what they expect. A mismatch can mean the wrong file, a
   cut recording, or gaps.
-- Whether an `EDF+D` file is expected to have gaps.
+- Whether an `EDF+D` file is expected to have gaps, and whether a continuous export
+  exists.
 
-Stop the intake and do not continue to other tools when: the file is refused; it holds no
-EEG-like channel the researcher can name; or the duration is far from what the study
-expects and the researcher has not explained it.
+Stop the intake and do not continue to other tools when: the file is refused; it is
+`EDF+D`; it holds no EEG-like channel the researcher can name; or the duration is far from
+what the study expects and the researcher has not explained it.
 
 ## Next
 
 - Signal quality: the signal-qc skill (`check_signal_quality`).
 - The researcher can run the same first look from a terminal with
-  `nexus-workbench qc PATH`, which inspects the file and checks signal quality.
+  `nexus-workbench qc PATH`, which inspects the file and checks signal quality with 30 s
+  epochs. It needs a recording of 30 s or more, and it refuses `EDF+D` like the quality
+  tool does.
 - No file at hand: `nexus-workbench sample` writes a synthetic sample night to try the
-  tools on. It prints where it wrote the files.
+  tools on (default folder `./nexus-sample`, or `--out FOLDER`). It prints where it wrote
+  the files. If sample files are already in that folder it stops and changes nothing; use
+  `--force` to replace them, or another `--out` folder.
 
 ## Report
 
@@ -77,6 +89,6 @@ expects and the researcher has not explained it.
 File <recordingId>: <format>, <durationSec / 3600 rounded to 0.1> h, <nChannels> channels.
 EEG: <label (reference), rate Hz> ...   EOG: ...   EMG: ...   Other: ...
 Unclear: <ch<N> channels, units shown as other, narrow ranges>.
-Gaps: <none | EDF+D, recorded time only>.  Annotations: <count>, text not readable.
+Gaps: <none | EDF+D: recorded time only, quality and band power not run>.  Annotations: <count>, text not readable.
 Questions for you: <list>.
 ```

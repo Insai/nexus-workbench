@@ -44,7 +44,7 @@ Never pool epochs or events across nights and call the pooled count n.
 | Kappa | `kappa` from `compare_hypnograms`; unweighted kappa does not depend on which absent stages are listed | Treating a constant-label case (`kappa` `null`) as perfect agreement |
 | Macro-F1 or any mean over stages | A fixed label set for every night (`W`, `N1`, `N2`, `N3`, `R`), with `null` stages counted and reported | A label set taken from whatever stages appear that night |
 | Agreement across stages | Kappa first, raw agreement second | Raw agreement alone; it is inflated by the most common stage |
-| Detector result | F1 next to the shuffled null (`f1P95`) | F1 alone |
+| Detector result | F1 next to the shuffled null (`f1P95`), with `nShuffles` and `reduced` | F1 alone, or any claim against a null where `nShuffles` is 0 |
 | Several tests in one analysis | Fix the family of tests in advance; correct with Holm (family-wise error) or Benjamini-Hochberg (false discovery rate); report how many tests ran | Reporting only the tests that passed |
 
 ## Small samples

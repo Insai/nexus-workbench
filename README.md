@@ -2,8 +2,9 @@
 
 Connects Claude Code and Codex to Insai Workbench, where sleep researchers
 review EEG recordings. It gives your coding agent a local MCP server named
-`nexus`, a few skills, and a command line to sign in. It also has local tools
-that read EEG files on your own computer.
+`nexus` with nine read-only tools, ten skills, and a command line to sign in.
+Four tools read your Workbench workspace; five read EEG files on your own
+computer and need no account.
 
 **Early access.** Agent access is switched on per workspace. Ask for it at
 <https://insai.tech/workbench>.
@@ -47,7 +48,7 @@ Then open Claude Code or Codex and ask: "list my Workbench recordings".
 | `nexus-workbench whoami` | Show the workspace your token reads. |
 | `nexus-workbench recordings` | List recordings (`--project`, `--limit`, `--cursor`, `--json`). |
 | `nexus-workbench sample` | Write a synthetic sample night to try the local tools on (`--out`, `--hours`, `--seed`, `--force`). |
-| `nexus-workbench qc PATH` | Describe a local EDF file and check its signal quality (`--json` for the raw results). |
+| `nexus-workbench qc PATH` | Describe a local EDF file and check its signal quality in 30 s epochs (`--json` for the raw results). The recording must be 30 s or longer. |
 | `nexus-workbench doctor` | Check the install, the sign-in and the agent registrations. |
 | `nexus-workbench mcp` | Run the MCP server on stdio. Your agent starts this; you do not need to. |
 
@@ -129,6 +130,24 @@ In Claude Code or Codex, ask for example:
 - "Compare the candidate events ./nexus-sample/sample_events_candidate.json with the
   reference ./nexus-sample/sample_events_reference.csv for an 8 hour recording"
   (`compare_events`)
+
+## Skills
+
+The skills tell your agent how to use the tools well and what not to conclude
+from them. `setup` copies them into your agent's skills folder.
+
+| Skill | Use it to |
+|---|---|
+| `connect-workbench` | Install, sign in, and handle a workspace tool that refuses. |
+| `edf-intake` | Take a first look at a local EDF file before any analysis. |
+| `signal-qc` | Check signal quality channel by channel and epoch by epoch. |
+| `band-power-by-stage` | Compute band power overall and per sleep stage. |
+| `scorer-agreement` | Compare two hypnograms of one night. |
+| `event-detector-eval` | Compare detected events with reference events against a shuffled null. |
+| `prereg` | Write down an analysis plan before running it. |
+| `verify-before-verdict` | Check a number or a negative result before reporting it. |
+| `leakage-check` | Audit an evaluation for leakage and confounds. |
+| `stats-rails` | Pick the right statistic across nights and people. |
 
 ## Privacy
 

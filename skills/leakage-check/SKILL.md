@@ -84,8 +84,8 @@ One that does not is worth fixing first.
   per arm before believing a weak arm is weak.
 - Check `null` values from the tools (for example stages with `epochs` 0 in
   `compute_band_power`) are left out and counted, not treated as zero.
-- Check units: `unit` from `inspect_edf` is what the file declares, and a declared unit is
-  a claim. If two sources disagree by a factor of 1000, ask.
+- Check units: `unit` from `inspect_edf` is what the file declares (an uncommon unit shows
+  as `other`), and a declared unit is a claim. If two sources disagree by a factor of 1000, ask.
 
 ## Stop and ask the researcher
 

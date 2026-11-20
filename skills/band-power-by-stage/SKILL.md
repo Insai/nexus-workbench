@@ -34,6 +34,16 @@ numbers made the same way.
 3. Check the hypnogram is for the same night and has the same epoch length. The tool
    checks only that it covers every whole epoch (up to two extra trailing epochs are
    ignored). It cannot tell that it belongs to this recording. Ask if unsure.
+4. Check the epoch count. The recording has `durationSec / epoch_sec` whole epochs (from
+   `inspect_edf`); the hypnogram should have the same number of rows. Hypnogram files have
+   no clock: a headerless file whose first column is onset seconds (0, 30, 60, ...) is read
+   in order as consecutive epochs, and a first column that skips a step is read as epoch
+   numbers instead. After the call, check that `hypnogram.epochs` equals `nEpochs` and
+   that `extraEpochsIgnored` is 0 or expected, before trusting any per-stage number.
+5. If `inspect_edf` showed `EDF+D` (`discontinuous` is `true`), stop: `compute_band_power`
+   refuses discontinuous recordings, as they are not supported yet. Tell the researcher,
+   and do not compute spectra another way or guess where the gaps are. A continuous export
+   (EDF or EDF+C) of the recording can be used.
 
 ## Steps
 
@@ -41,10 +51,16 @@ numbers made the same way.
    - `channels`: default is channels whose label looks like EEG; at most 32. When no
      channel looks like EEG, every voltage channel is used.
    - `epoch_sec`: default 30. Must match the hypnogram.
-   - `bands`: up to 12 custom bands as `{"name": [low Hz, high Hz], ...}`. Default bands are delta
-     0.5 to 4, theta 4 to 8, alpha 8 to 12, sigma 12 to 16, beta 16 to 30 Hz, each
-     including its lower edge and excluding its upper edge. Agree band edges with the
-     researcher before the run, not after seeing the numbers.
+   - `bands`: at most 8 custom bands, as `{"name": [low Hz, high Hz], ...}` or
+     `[{"name": ..., "lowHz": ..., "highHz": ...}, ...]`. More than 8 is refused; split
+     them over several calls. Default bands are delta 0.5 to 4, theta 4 to 8, alpha 8 to
+     12, sigma 12 to 16, beta 16 to 30 Hz, each including its lower edge and excluding its
+     upper edge. Agree band edges with the researcher before the run, not after seeing the
+     numbers.
+   - No notch filter is applied. Mains interference sits at 50 Hz or 60 Hz depending on
+     the country where the recording was made (and at its harmonics), so a custom band
+     that reaches above about 45 Hz can be dominated by it. Say so if the researcher asks
+     for such a band.
 2. Read the result.
 
 | Key | Meaning |
@@ -57,7 +73,7 @@ numbers made the same way.
 | `channels[].byStage` | Per stage `W`, `N1`, `N2`, `N3`, `R`: `epochs`, `absolute`, `relative`. A stage with `epochs` 0 has `null` powers. |
 | `hypnogram` | `fileId`, `epochs`, `unscored`, `extraEpochsIgnored`. Unscored epochs count in the overall numbers but in no stage. |
 | `channels[].bandsAboveNyquist` | Per channel, the names of bands whose upper edge is above half that channel's sample rate. Absent when no band is cut. A band that starts at or above half the rate is `null`; one that only ends above it is partial. |
-| `skipped`, `truncated` | Non-voltage channels left out; a channel cap was hit. |
+| `skipped`, `truncated` | Non-voltage channels left out, at most 20 listed. `truncated` is `true` when more than 32 channels were chosen or more than 20 were skipped. |
 
 ## Reporting rules
 
@@ -85,6 +101,8 @@ numbers made the same way.
 - A channel has `bandsAboveNyquist` listing a band they care about.
 - The hypnogram's `unscored` count is large, or `extraEpochsIgnored` is not 0 and they did
   not expect it.
+- The hypnogram's epoch count does not match the recording length, or the tool refused
+  the hypnogram for its length. Do not trim or pad it yourself.
 - The question is a comparison across nights or people. Then the unit of analysis is the
   person, and the stats-rails and leakage-check skills apply before any group result.
 

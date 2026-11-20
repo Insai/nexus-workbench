@@ -27,33 +27,43 @@ physiological artifact.
 1. Call `check_signal_quality` with `path`. Optional:
    - `channels`: labels as `inspect_edf` shows them, `ch<N>`, or 1-based positions.
      Default is every data channel. At most 64 per call.
-   - `epoch_sec`: default 30. Use the epoch length of the hypnogram the researcher will
-     use later, so bad epochs line up with scored epochs. It must be a whole number of
-     samples at each channel's rate.
-2. Read the result.
+   - `epoch_sec`: default 30, from 1 to 3600. Use the epoch length of the hypnogram the
+     researcher will use later, so bad epochs line up with scored epochs. It must be a
+     whole number of samples at each channel's rate.
+2. If the tool refuses the file, report the message as given and stop. An `EDF+D`
+   (discontinuous) file is always refused: discontinuous recordings are not supported yet.
+   Tell the researcher, and do not guess at the gaps or check the signal another way. A
+   continuous export (EDF or EDF+C) of the same recording can be checked.
+3. Read the result.
 
 | Key | Meaning |
 |---|---|
 | `nEpochs`, `epochSec` | Epochs checked. `secondsNotInEpochs` is a trailing part shorter than one epoch, not checked. |
 | `channels[].counts`, `percent` | Epochs per class for that channel. |
-| `channels[].overall` | One class for the whole channel. `flat` or `railed`: bad throughout. `suspect`: more than 10 % of epochs saturated, flat or holding a constant run, or more than 1 % of samples on the extremes. Otherwise `ok`. |
+| `channels[].overall` | One class for the whole channel. `flat` or `railed`: bad throughout. `suspect`: more than 10 % of epochs classed anything but `ok`, or more than 1 % of all samples on the channel's extremes. Otherwise `ok`. A channel with no `ok` epoch is never `ok` overall. |
 | `usablePercent` | `ok` epochs over all epochs of all checked channels. |
 | `allChannelsOkPercent` | Epochs in which every checked channel is `ok`. Lower than `usablePercent` when bad stretches fall on different channels. |
 | `badSpans` | Runs of consecutive epochs with the same non-ok class, longest first, at most 20. `badSpansTotal` gives the full count. |
-| `skipped` | Channels left out because their unit is not a voltage, with the reason. |
+| `skipped` | Channels left out because their unit is not a voltage, with the reason. At most 20 are listed. |
 | `thresholds` | The thresholds used, in microvolts. Quote them if a reader will compare runs. |
-| `truncated`, `channelsTruncated` | A cap was hit. Say so. |
+| `truncated`, `channelsTruncated` | A cap was hit: more than 64 channels (`channelsTruncated`), more than 20 bad spans, or more than 20 skipped channels. Say so. |
 
 ## What the classes mean
 
 - `flat`: standard deviation below `flatStdUv` at a level that is not a rail. Typical of a
   dead or disconnected contact, or zero-filled data.
-- `railed`: peak-to-peak range above `saturatedPeakToPeakUv`, or a large share of samples
-  on the channel's own minimum or maximum, or a flat stretch at a rail level. Typical of
-  saturation or clipping.
+- `railed`: peak-to-peak range above `saturatedPeakToPeakUv` (EEG and EOG channels only),
+  or a quarter or more of samples on the channel's own minimum or maximum, or a flat
+  stretch or a constant run at a rail level. Typical of saturation or clipping.
 - `suspect`: a constant run of at least `constantRunSec`, more than 1 % of samples on the
-  extremes, or RMS above `suspectRmsUv`. Worth a look, not proof of a problem.
+  extremes, or RMS above `suspectRmsUv` (EEG and EOG channels only). The RMS is taken about
+  the epoch mean, so it is the standard deviation and a steady offset does not count. Worth
+  a look, not proof of a problem.
 - `ok`: none of the above. Not the same as clean.
+- The two amplitude rules (peak-to-peak and RMS) apply only to channels typed `eeg` or
+  `eog`. On `ecg`, `emg` and `other` channels only the flat, rail, constant-run and
+  extremes rules apply, so large ECG or EMG bursts are not flagged. The type is a guess from
+  the label; a mislabelled channel gets the wrong rules.
 
 ## What not to conclude
 

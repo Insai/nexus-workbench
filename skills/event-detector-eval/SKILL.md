@@ -38,7 +38,8 @@ comparison.
 5. `recording_hours`: the recording length. Needed for false positives per hour and used as
    the span of the null. Take it from `durationSec` of `inspect_edf` divided by 3600. For
    an `EDF+D` file that is recorded time, not the span; ask how event times were counted.
-6. `seed` and `n_shuffles` (default 0 and 200). Keep the seed fixed so the null repeats.
+6. `seed` and `n_shuffles` (default 0 and 200; `n_shuffles` from 0 to 2000). Keep the seed
+   fixed so the null repeats.
 
 If the researcher wants results at several thresholds, agree the list in advance and
 report all of them, not the best one.
@@ -68,7 +69,11 @@ report all of them, not the best one.
 - Report `f1` next to `f1Mean` and `f1P95`. An F1 at or below `f1P95` is not
   distinguishable from chance timing on this night.
 - With dense events the null F1 can be high. A high F1 means little if the null is close.
-- If `reduced` is `true`, fewer shuffles ran than asked; `nShuffles` says how many. Report it.
+- `nShuffles` is the number of shuffles that actually ran. To keep the call quick, the
+  tool stops shuffling before a work bound is passed. If `reduced` is `true`, fewer ran
+  than asked. Report `nShuffles` and `reduced` with every null comparison.
+- If `nShuffles` is 0, no shuffle ran and `f1Mean`, `f1P95` and `recallMean` are `null`.
+  Then make no claim against the null at all: say the null could not be computed.
 - The null shifts events across the whole night. Events that occur only in one sleep
   stage (spindles in N2 and N3, for example) beat it just by falling in that stage, in
   both files. The tool's null is always whole-night. A within-stage null needs your own
@@ -92,6 +97,10 @@ report all of them, not the best one.
 - The thresholds were not agreed before the first call.
 - An event starts after `recording_hours` (the tool raises an error), or the two files may
   use different time origins.
+- The tool refuses with "Matching these events would take too long". Many reference events
+  lie close to candidates without overlapping them by `min_overlap`. The message suggests
+  a lower `min_overlap` or `tolerance_sec`, or one label at a time; those are settings
+  agreed in advance, so do not change them to get past the refusal. Tell the researcher.
 - `f1` is close to `f1P95`, or the null is high because events are dense.
 - The researcher wants per-event lists of matches and misses. This tool returns counts
   only.
@@ -103,6 +112,6 @@ Events, reference <fileIdReference>, candidate <fileIdCandidate>, label <label o
 Matching: greedy one to one, min overlap <minOverlapSec> s, tolerance <toleranceSec> s (set before the run).
 Reference <reference>, candidate <candidate>: matched <matched>, missed <missed>, extra <extra>.
 Precision <precision>, recall <recall>, F1 <f1>; false positives <falsePositivesPerHour> per hour.
-Shuffled null (<nShuffles> shifts, seed <seed>): F1 mean <f1Mean>, 95th percentile <f1P95>.
-F1 is <above | not above> the 95th percentile of the null on this night.
+Shuffled null (<nShuffles> shifts run, reduced <reduced>, seed <seed>): F1 mean <f1Mean>, 95th percentile <f1P95>.
+F1 is <above | not above> the 95th percentile of the null on this night. (With 0 shifts run: no null, no claim.)
 ```

@@ -32,7 +32,13 @@ come from misaligned files, not from the scorers, so check alignment first.
 4. Same start. Equal length does not prove the first epochs line up: one file may start at
    lights-off and the other at the recording start. If an EDF exists, compare
    `durationSec` from `inspect_edf` with epochs times `epoch_sec` for each file.
-5. A shift by one or more epochs shows as confusion spread along stage transitions and
+5. Epoch count matches the recording. Hypnogram files have no clock. A headerless file
+   whose first column is onset seconds (0, 30, 60, ...) is read in order as consecutive
+   epochs; the times do not place the rows. A first column that skips a step is read as
+   epoch numbers instead, which can make the file far longer than the night. After the
+   call, check that `epochsTotal` equals the recording's `durationSec / epoch_sec` before
+   trusting the result. If it does not, stop and ask.
+6. A shift by one or more epochs shows as confusion spread along stage transitions and
    kappa well below what the per-stage minutes suggest. If you suspect a shift, stop and
    ask. A shifted copy is a new file the researcher should make and name.
 
@@ -73,7 +79,8 @@ come from misaligned files, not from the scorers, so check alignment first.
 
 ## Stop and ask the researcher
 
-- Epoch counts differ, or alignment is in doubt.
+- Epoch counts differ, `epochsTotal` does not match the recording length, or alignment
+  is in doubt.
 - `kappa` is `null`, or one side uses only one or two stages.
 - `epochsUnscored` is a large share of the night.
 - The researcher wants a single summary across many nights or scorers. Agree the unit
