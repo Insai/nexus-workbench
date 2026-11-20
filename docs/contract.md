@@ -75,7 +75,9 @@ Content-Type: application/json
 | 500 | `internal` | Anything else. The message never carries internal detail. |
 
 Rate limits: 60 calls a minute per token; `list_recordings` 10 a minute per
-token; 10 failed sign-ins a minute per network address.
+token; `list_projects` 10 a minute per token; 10 failed sign-ins (unknown or
+revoked tokens) a minute per network address, applied only to failing calls.
+An expired token is not a failed sign-in.
 
 A client treats HTTP 404 with no JSON `error` body from `API_BASE` as "agent
 access is not available on this server yet" (early access), not as a bug.
@@ -154,7 +156,7 @@ default 50), `cursor` (string from a previous page).
 | `url` | string | Always present. The recording's page in Workbench. |
 | `durationSec` | number | Length of the recording. |
 | `nEpochs` | integer | Number of 30-second epochs. |
-| `qualityGrade` | string | Signal quality grade. |
+| `qualityGrade` | string | Signal quality grade: `good`, `marginal`, `bad` or `too_short`. |
 | `qualityScore` | number | Signal quality score. |
 | `device` | string | Device family, lowercase. |
 | `hasEvents` | boolean | Machine events exist. Says that output exists, not what it is. |
@@ -210,7 +212,9 @@ Called by the Workbench page as the signed-in person. Request data:
 
 Refusals use the callable error protocol. The error `details` object always
 carries `{"code": "<code>"}` with a code from section 3.1, plus `token_limit`
-(the person already holds 10 live tokens in the workspace).
+(the person already holds 10 live tokens in the workspace, or too many ended
+tokens are still kept there) and `rate_limited` (more than 20 tokens created in
+an hour by one person in one workspace).
 
 Token row:
 
