@@ -198,10 +198,16 @@ def test_browser_login_out_of_attempts(
 
 
 def test_browser_login_expired(api: FakeAPI, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
-    no_browser(monkeypatch)
-    monkeypatch.setattr("builtins.input", lambda text: "ABCD-EFGH")  # never approved
+    opened = no_browser(monkeypatch)
+
+    def prompt(text: str) -> str:
+        code = api.approve(opened[-1])
+        api.sessions.clear()  # the session ran out before the code was typed
+        return code
+
+    monkeypatch.setattr("builtins.input", prompt)
     assert cli.main(["login"]) == 1
-    assert "expired" in capsys.readouterr().err
+    assert_failed_cleanly(api, capsys, "ran out of time or was cancelled")
 
 
 def test_browser_login_unavailable_falls_back_to_token(
@@ -216,6 +222,206 @@ def test_browser_login_unavailable_falls_back_to_token(
     assert "Connect an agent" in out
     assert opened == []
     assert auth.load_token(API_BASE).token == token
+
+
+def assert_failed_cleanly(api: FakeAPI, capsys: pytest.CaptureFixture[str], needle: str) -> str:
+    """The sign-in failed with ``needle`` on stderr, no traceback, and no token shown or saved."""
+    captured = capsys.readouterr()
+    assert needle in captured.err
+    assert "nexus-workbench login" in captured.err or "insai.tech" in captured.err
+    for text in (captured.out, captured.err):
+        assert "Traceback" not in text
+        assert "does not understand" not in text
+        assert auth.TOKEN_PREFIX not in text
+        for token in api.tokens:
+            assert token not in text
+    assert auth.load_token(API_BASE).token is None
+    return captured.err
+
+
+def approve_on_first_prompt(api: FakeAPI, opened: list[str]):
+    approved: list[str] = []
+
+    def prompt(text: str) -> str:
+        if not approved:
+            approved.append(api.approve(opened[-1]))
+        return approved[0]
+
+    return prompt
+
+
+def test_browser_login_token_limit(api: FakeAPI, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    api.token_limit = True
+    opened = no_browser(monkeypatch)
+    monkeypatch.setattr("builtins.input", approve_on_first_prompt(api, opened))
+    assert cli.main(["login"]) == 1
+    err = assert_failed_cleanly(api, capsys, "limit of 10 tokens for this workspace")
+    assert "Connect an agent" in err
+    assert "Revoke one" in err
+    assert api.tokens == {}
+
+
+def test_browser_login_code_before_approval_asks_again(
+    api: FakeAPI, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    opened = no_browser(monkeypatch)
+    state: dict[str, Any] = {"n": 0}
+
+    def prompt(text: str) -> str:
+        state["n"] += 1
+        if state["n"] == 1:
+            return "ABCD-EFGH"  # typed before approving in the browser
+        return api.approve(opened[-1])
+
+    monkeypatch.setattr("builtins.input", prompt)
+    assert cli.main(["login"]) == 0
+    captured = capsys.readouterr()
+    assert "Approve this computer in your browser first" in captured.err
+    assert "Approve this computer in your browser first" not in captured.out
+    assert "did not accept" not in captured.err
+    assert state["n"] == 2
+    (session,) = api.sessions.values()
+    assert session.attempts_left == 5  # the early code used no attempt
+    assert auth.load_token(API_BASE).token in api.tokens
+
+
+def test_browser_login_never_approved_gives_up(
+    api: FakeAPI, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    no_browser(monkeypatch)
+    monkeypatch.setattr("builtins.input", lambda text: "ABCD-EFGH")  # never approved
+    assert cli.main(["login"]) == 1
+    err = assert_failed_cleanly(api, capsys, "not approved in the browser")
+    exchanges = [r for r in api.requests if b'"exchange"' in r.content]
+    assert len(exchanges) == 10
+    assert err.count("Approve this computer in your browser first") == 9
+
+
+def test_browser_login_start_invalid_argument_is_an_error(
+    api: FakeAPI, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    api.login_errors = {"start": [(400, "invalid_argument")]}
+    no_browser(monkeypatch)
+    prompts: list[str] = []
+    monkeypatch.setattr("builtins.input", lambda text: prompts.append(text) or "")
+    assert cli.main(["login"]) == 1
+    err = capsys.readouterr().err
+    assert "did not accept" in err
+    assert "Approve this computer" not in err
+    assert prompts == []
+
+
+@pytest.mark.parametrize("action", ["start", "exchange"])
+def test_browser_login_forbidden(
+    api: FakeAPI, monkeypatch: pytest.MonkeyPatch, capsys, action: str
+) -> None:
+    api.login_errors = {action: [(403, "forbidden")]}
+    opened = no_browser(monkeypatch)
+    monkeypatch.setattr("builtins.input", approve_on_first_prompt(api, opened))
+    assert cli.main(["login"]) == 1
+    err = assert_failed_cleanly(api, capsys, "Workbench refused this sign-in")
+    assert "workspace owner" in err
+    assert "This token" not in err
+
+
+@pytest.mark.parametrize("action", ["start", "exchange"])
+def test_browser_login_early_access_required(
+    api: FakeAPI, monkeypatch: pytest.MonkeyPatch, capsys, action: str
+) -> None:
+    api.login_errors = {action: [(403, "early_access_required")]}
+    opened = no_browser(monkeypatch)
+    monkeypatch.setattr("builtins.input", approve_on_first_prompt(api, opened))
+    assert cli.main(["login"]) == 1
+    err = assert_failed_cleanly(api, capsys, "early access")
+    assert c.EARLY_ACCESS_URL in err
+
+
+@pytest.mark.parametrize("action", ["start", "exchange"])
+def test_browser_login_expired_reply(
+    api: FakeAPI, monkeypatch: pytest.MonkeyPatch, capsys, action: str
+) -> None:
+    api.login_errors = {action: [(410, "login_expired")]}
+    opened = no_browser(monkeypatch)
+    monkeypatch.setattr("builtins.input", approve_on_first_prompt(api, opened))
+    assert cli.main(["login"]) == 1
+    assert_failed_cleanly(api, capsys, "ran out of time or was cancelled")
+
+
+@pytest.mark.parametrize("action", ["start", "exchange"])
+@pytest.mark.parametrize(
+    ("retry_after", "needle"), [("30", "Try again in 30 seconds"), (None, "Try again in a minute")]
+)
+def test_browser_login_rate_limited(
+    api: FakeAPI,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+    action: str,
+    retry_after: str | None,
+    needle: str,
+) -> None:
+    opened = no_browser(monkeypatch)
+    if action == "start":
+        api.rate_limit_next = [retry_after]
+        prompt = approve_on_first_prompt(api, opened)
+    else:
+        inner = approve_on_first_prompt(api, opened)
+
+        def prompt(text: str) -> str:
+            api.rate_limit_next = [retry_after]  # the next call is the exchange
+            return inner(text)
+
+    monkeypatch.setattr("builtins.input", prompt)
+    assert cli.main(["login"]) == 1
+    err = assert_failed_cleanly(api, capsys, needle)
+    assert "Too many sign-in requests" in err
+
+
+@pytest.mark.parametrize(
+    ("hostname", "expected"),
+    [
+        ("lab-mac.local", "lab-mac.local"),
+        ("--..__", "computer"),
+        ("", "computer"),
+        ("  \u200b\x07  ", "computer"),
+        ("my\u200blaptop\x1b", "mylaptop"),
+        ("a" * 100, "a" * 64),
+        (" " + "b" * 63 + " c", "b" * 63),
+    ],
+)
+def test_device_name_is_cleaned(
+    monkeypatch: pytest.MonkeyPatch, hostname: str, expected: str
+) -> None:
+    from nexus_workbench.login import device_name
+
+    monkeypatch.setattr("socket.gethostname", lambda: hostname)
+    assert device_name() == expected
+
+
+def test_device_name_when_hostname_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    from nexus_workbench.login import device_name
+
+    def broken() -> str:
+        raise OSError("no host name")
+
+    monkeypatch.setattr("socket.gethostname", broken)
+    assert device_name() == "computer"
+
+
+@pytest.mark.parametrize("hostname", ["!!!", "", "x" * 80, None])
+def test_browser_login_sends_a_safe_device_name(
+    api: FakeAPI, monkeypatch: pytest.MonkeyPatch, capsys, hostname: str | None
+) -> None:
+    def gethostname() -> str:
+        if hostname is None:
+            raise OSError("no host name")
+        return hostname
+
+    monkeypatch.setattr("socket.gethostname", gethostname)
+    opened = no_browser(monkeypatch)
+    monkeypatch.setattr("builtins.input", approve_on_first_prompt(api, opened))
+    assert cli.main(["login"]) == 0
+    start = json.loads(api.requests[0].content)
+    assert start["deviceName"] == ("x" * 64 if hostname == "x" * 80 else "computer")
 
 
 def test_normalize_code() -> None:

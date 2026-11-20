@@ -138,6 +138,15 @@ class RateLimited(WorkbenchError):
         super().__init__(*args, **kwargs)
 
 
+class TokenLimit(WorkbenchError):
+    code = "token_limit"
+    default_message = "You have reached the limit of 10 tokens for this workspace."
+    default_hint = (
+        'Revoke one on the "Connect an agent" page in Workbench (account menu), '
+        "then run `nexus-workbench login` again."
+    )
+
+
 class InternalError(WorkbenchError):
     code = "internal"
     default_message = "Workbench had a problem answering."
@@ -197,6 +206,7 @@ ERRORS_BY_CODE: dict[str, type[WorkbenchError]] = {
         EarlyAccessRequired,
         NotFound,
         RateLimited,
+        TokenLimit,
         InternalError,
         LoginExpired,
         CodeWrong,

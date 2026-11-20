@@ -140,6 +140,7 @@ ERROR_CASES = [
     (403, "early_access_required", c.EarlyAccessRequired, c.EARLY_ACCESS_URL),
     (404, "not_found", c.NotFound, "does not exist"),
     (405, "invalid_argument", c.InvalidArgument, "did not accept"),
+    (409, "token_limit", c.TokenLimit, "limit of 10 tokens"),
     (429, "rate_limited", c.RateLimited, "Wait"),
     (500, "internal", c.InternalError, "Try again"),
 ]

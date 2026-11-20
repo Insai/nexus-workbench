@@ -54,10 +54,14 @@ class FakeAPI:
     requests: list[httpx.Request] = field(default_factory=list)
     login_available: bool = True
     agent_api_available: bool = True
-    rate_limit_next: list[str] = field(default_factory=list)  # Retry-After values to send first
+    # Retry-After values to send first; None sends a 429 without the header.
+    rate_limit_next: list[str | None] = field(default_factory=list)
     fail_next: list[str] = field(default_factory=list)  # "connect" -> raise ConnectError
     workspace_name: str = "Sleep lab"
     token_name: str = "laptop"
+    token_limit: bool = False  # True -> exchange with the right code returns 409 token_limit
+    # Refusals to send first for one sign-in action: {"start": [(403, "forbidden")], ...}.
+    login_errors: dict[str, list[tuple[int, str]]] = field(default_factory=dict)
 
     @property
     def transport(self) -> httpx.MockTransport:
@@ -80,7 +84,7 @@ class FakeAPI:
             retry_after = self.rate_limit_next.pop(0)
             return httpx.Response(
                 429,
-                headers={"Retry-After": retry_after},
+                headers={} if retry_after is None else {"Retry-After": retry_after},
                 json={"error": {"code": "rate_limited", "message": "Too many calls."}},
             )
         path = request.url.path
@@ -192,6 +196,10 @@ class FakeAPI:
         if isinstance(body, httpx.Response):
             return body
         action = body.get("action")
+        queued = self.login_errors.get(str(action))
+        if queued:
+            status, code = queued.pop(0)
+            return _error(status, code, "Refused.")
         if action == "start":
             session = LoginSession(
                 session_id=secrets.token_hex(16),
@@ -212,17 +220,20 @@ class FakeAPI:
             if (
                 session is None
                 or session.used
-                or session.code is None
                 or session.attempts_left <= 0
                 or body.get("pollSecret") != session.poll_secret
             ):
                 return _error(410, "login_expired", "This sign-in has expired.")
+            if session.code is None:  # not approved yet: refused, no attempt used
+                return _error(400, "invalid_argument", "Approve the sign-in first.")
             given = "".join(ch for ch in str(body.get("code", "")).upper() if ch not in " -")
             if given != session.code:
                 session.attempts_left -= 1
                 return _error(
                     400, "code_wrong", "The code is wrong.", attemptsLeft=session.attempts_left
                 )
+            if self.token_limit:  # the session stays approved
+                return _error(409, "token_limit", "You already have 10 tokens.")
             session.used = True
             token = self.add_token()
             return httpx.Response(

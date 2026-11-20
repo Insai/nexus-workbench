@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import contextlib
 import getpass
+import math
 import socket
 import sys
+import unicodedata
 import webbrowser
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -15,7 +17,11 @@ from . import auth
 from .client import (
     CONNECT_PAGE_HINT,
     CodeWrong,
+    Forbidden,
+    InvalidArgument,
+    LoginExpired,
     LoginNotAvailable,
+    RateLimited,
     TokenExpired,
     Unauthenticated,
     WorkbenchClient,
@@ -27,6 +33,9 @@ from .client import (
 CODE_ALPHABET = "ABCDEFGHJKMNPQRSTVWXYZ23456789"
 CODE_LENGTH = 8
 MAX_LOCAL_RETRIES = 10
+MAX_PENDING_REPLIES = 10
+DEVICE_NAME_LIMIT = 64
+FALLBACK_DEVICE_NAME = "computer"
 
 
 class LoginFailed(Exception):
@@ -50,6 +59,58 @@ def code_problem(code: str) -> str | None:
             + ". Check the code on the Workbench page and type it again."
         )
     return None
+
+
+def device_name() -> str:
+    """This computer's name, cleaned the way the server cleans it (contract 5.1).
+
+    Control and invisible characters are dropped, other spaces become plain spaces, and the
+    name is trimmed and cut to 64 characters. A name with no letter or digit left, or a
+    host name that cannot be read, becomes ``computer``.
+    """
+    try:
+        raw = socket.gethostname()
+    except (OSError, UnicodeError):
+        return FALLBACK_DEVICE_NAME
+    if not isinstance(raw, str):
+        return FALLBACK_DEVICE_NAME
+    kept = []
+    for ch in raw:
+        if ch.isprintable():
+            kept.append(ch)
+        elif unicodedata.category(ch) == "Zs":
+            kept.append(" ")
+    name = "".join(kept).strip()[:DEVICE_NAME_LIMIT].strip()
+    if not any(ch.isalnum() for ch in name):
+        return FALLBACK_DEVICE_NAME
+    return name
+
+
+def sign_in_failure(exc: WorkbenchError) -> LoginFailed:
+    """The sentence a person sees when the server refuses a sign-in step."""
+    if isinstance(exc, LoginExpired):
+        return LoginFailed(
+            "This sign-in ran out of time or was cancelled. "
+            "Run `nexus-workbench login` to start again."
+        )
+    if isinstance(exc, Forbidden):
+        return LoginFailed(
+            "Workbench refused this sign-in: you may no longer be a member of that workspace, "
+            "or it is closed. Ask the workspace owner, then run `nexus-workbench login` again."
+        )
+    if isinstance(exc, RateLimited):
+        if exc.retry_after is not None:
+            seconds = max(1, math.ceil(exc.retry_after))
+            noun = "second" if seconds == 1 else "seconds"
+            wait = f"{seconds} {noun}"
+        else:
+            wait = "a minute"
+        return LoginFailed(
+            f"Too many sign-in requests to Workbench. Try again in {wait} "
+            "with `nexus-workbench login`."
+        )
+    # Token limit, early access, network and the rest already read as one clear sentence.
+    return LoginFailed(str(exc))
 
 
 @dataclass
@@ -141,8 +202,12 @@ def login_with_token(client: WorkbenchClient, io: LoginIO, *, use_keyring: bool)
 
 def login_with_browser(client: WorkbenchClient, io: LoginIO, *, use_keyring: bool) -> LoginResult:
     """Browser approval flow. Raises LoginNotAvailable when the server does not offer it."""
-    device = (socket.gethostname() or "computer")[:64]
-    session = client.cli_login_start(device_name=device)
+    try:
+        session = client.cli_login_start(device_name=device_name())
+    except LoginNotAvailable:
+        raise
+    except WorkbenchError as exc:
+        raise sign_in_failure(exc) from None
     url = session["approvalUrl"]
     io.say("To sign in, approve this computer in Workbench:")
     io.say(f"  {url}")
@@ -152,6 +217,7 @@ def login_with_browser(client: WorkbenchClient, io: LoginIO, *, use_keyring: boo
     io.say("After you approve, Workbench shows a code like ABCD-EFGH.")
 
     local_retries = 0
+    pending_replies = 0
     while True:
         try:
             raw = io.prompt("Code: ")
@@ -176,12 +242,32 @@ def login_with_browser(client: WorkbenchClient, io: LoginIO, *, use_keyring: boo
                 session_id=session["sessionId"], poll_secret=session["pollSecret"], code=code
             )
         except CodeWrong as exc:
+            pending_replies = 0
             print(str(exc), file=io.err)
             if exc.attempts_left is not None and exc.attempts_left <= 0:
                 raise LoginFailed(
                     "No attempts are left. Run `nexus-workbench login` to start again."
                 ) from None
             continue
+        except InvalidArgument:
+            # Contract 5.1: a code sent before the person approves is refused this way and
+            # uses no attempt. Our codes are always 8 checked characters, so nothing else
+            # we send to exchange can be refused like this.
+            pending_replies += 1
+            if pending_replies >= MAX_PENDING_REPLIES:
+                raise LoginFailed(
+                    "This computer was not approved in the browser. "
+                    "Run `nexus-workbench login` to start again."
+                ) from None
+            print(
+                "Approve this computer in your browser first, then type the code shown there.",
+                file=io.err,
+            )
+            continue
+        except LoginNotAvailable:
+            raise
+        except WorkbenchError as exc:
+            raise sign_in_failure(exc) from None
         break
 
     token = data["token"]
