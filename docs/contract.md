@@ -205,6 +205,28 @@ Returns one recording row plus, each only when known and allowed:
 
 `list_layers`, single marks and events, signal download and every write action.
 
+### 3.3 Codes the client adds
+
+The command line puts the code in brackets in its error messages, like
+`Not signed in (not_signed_in)`. With `--json` it prints the error to stderr
+as `{"error": {"code": "<code>", "message": "<text>"}}` and exits non-zero.
+The MCP tools return a message for a person, without the code.
+The codes are the server codes in section 3.1 and 5.1, plus these, which the
+client sets itself and the server never sends:
+
+| `code` | When |
+|---|---|
+| `not_signed_in` | No usable token on this computer: none saved, or the saved one or `NEXUS_TOKEN` cannot be read. |
+| `config` | `NEXUS_API_URL` is set but does not start with `https://`. |
+| `network` | Workbench could not be reached, or took too long to answer. |
+| `unexpected_response` | A reply this version does not understand, or a redirect. |
+| `login_not_available` | The sign-in endpoint answered 404 (section 5). |
+| `usage` | A command-line argument is out of range. Exit code 2. |
+| `local_file` | A local tool refused the file (missing, not an EDF, too short, EDF+D). |
+| `local_unexpected` | An unexpected error while reading a local file. `NEXUS_DEBUG=1` prints the traceback. |
+
+HTTP 404 with no JSON `error` body maps to `early_access_required`.
+
 ## 4. Token management (Firebase callable `workbench_agent_token`)
 
 Called by the Workbench page as the signed-in person. Request data:
