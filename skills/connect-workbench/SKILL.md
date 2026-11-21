@@ -24,8 +24,9 @@ Workbench or on the researcher's computer.
 
 - Never ask the researcher to paste a token into the chat, and never write a token into a
   file, a command-line argument, a commit or a log. The researcher runs
-  `nexus-workbench login --token` in their own terminal and types or pastes the token at its
-  prompt, or pipes it in from a file they control.
+  `nexus-workbench login` in their own terminal and approves it in the browser. With a
+  token, they run `nexus-workbench login --token` and type or paste it at its prompt, or
+  pipe it in from a file they control.
 - If a token appears in the chat anyway, do not repeat it and do not use it. Ask the
   researcher to revoke it on the Connect an agent page and make a new one.
 - Never set `NEXUS_TOKEN` yourself, never write a token into a file in the project, and
@@ -53,10 +54,12 @@ Workbench or on the researcher's computer.
    Do not run `setup` yourself unless the researcher asks you to. Run from an agent shell
    it does not ask for confirmation, and it changes their Claude Code and Codex
    configuration.
-3. Sign-in needs a token. The researcher makes one on the Connect an agent page in
-   Workbench (account menu). The token is shown once. Then they run
-   `nexus-workbench login --token` and paste it at the prompt. Signing in through the
-   browser comes later; until then a token is the only way.
+3. Ask the researcher to run `nexus-workbench login` in their own terminal. It opens
+   Workbench in the browser. They approve this computer there, then type the code it
+   shows (8 characters, like ABCD-EFGH) into the terminal. The token it makes lasts 90
+   days and is saved only on their computer. If the browser flow is not available, or
+   they prefer a token: they make one on the Connect an agent page in Workbench (account
+   menu), then run `nexus-workbench login --token` and paste it at the prompt.
 4. Ask the researcher to run `nexus-workbench doctor`. It checks the install, the sign-in
    and the agent registrations, and shows only the last four characters of the token.
 5. A newly registered MCP server is usually picked up by a new agent session. If the tools
@@ -79,8 +82,8 @@ message, not the exact words; the wording can change between versions.
 
 | The message says | What it means | What to do |
 |---|---|---|
-| "Not signed in" | No saved token on this computer. | Ask the researcher to run `nexus-workbench login --token` in their terminal. |
-| "Workbench did not accept your token" | Token mistyped, unknown or revoked. | The researcher makes a new token on the Connect an agent page and signs in again. |
+| "Not signed in" | No saved token on this computer. | Ask the researcher to run `nexus-workbench login` in their terminal. |
+| "Workbench did not accept your token" | Token mistyped, unknown or revoked. | The researcher runs `nexus-workbench login` again. |
 | "Your Workbench token has expired" | The token is past its expiry. | Same as above. Tokens last 90 days by default. |
 | "This token can no longer read the workspace" | They left the workspace, it is closed, or the token is older than their current membership. | Stop. The researcher asks the workspace owner, then makes a new token. |
 | "not switched on for this workspace yet" | Agent access is off for this workspace. | See Early access. Stop. |
@@ -90,7 +93,7 @@ message, not the exact words; the wording can change between versions.
 | "Could not reach Workbench", "Workbench had a problem answering" | Network or server trouble. | Try once more later. If it persists, ask the researcher to run `nexus-workbench doctor`. |
 | "Workbench took too long to answer" | The server did not answer in time. | Retry once. If it happens again, check the connection. |
 | "Workbench did not accept the request" | An argument was refused, often a stale `cursor` when listing. | Check the arguments. When listing, start the list again without the `cursor`. |
-| "Invalid value for <argument>" | The call itself was wrong: an argument of the wrong type, missing, or out of range (for example `limit` above 100). Nothing reached Workbench. | Fix the named argument and call once more. |
+| "<argument> must be ..." or "<argument> is required" | The call itself was wrong: an argument of the wrong type, missing, or out of range (for example "limit must be an integer from 1 to 100 (got 500)"). Nothing reached Workbench. | Fix the named argument as the message says and call once more. |
 | "Something went wrong in the Workbench tools" | An unexpected error in the local tools. | Ask the researcher to run `nexus-workbench doctor`. |
 | "an answer this version does not understand" | The installed package is older than the server, or the server sent a value this version cannot read. Not a mistake in the call. | Do not change the arguments. Tell the researcher; the message says how to update. |
 

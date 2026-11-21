@@ -1,0 +1,20 @@
+name: Feature request
+description: Suggest a tool, a skill or a change.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do
+      description: The research task, and where the current tools fall short.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would help
+      description: A tool, an argument, a skill or a docs change. Keep in mind that every tool is read-only.
+  - type: textarea
+    id: other
+    attributes:
+      label: Anything else

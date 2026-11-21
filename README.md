@@ -1,13 +1,16 @@
 # nexus-workbench
 
-Connects Claude Code and Codex to Insai Workbench, where sleep researchers
-review EEG recordings. It gives your coding agent a local MCP server named
-`nexus` with nine read-only tools, ten skills, and a command line to sign in.
-Four tools read your Workbench workspace; five read EEG files on your own
-computer and need no account.
+One command adds Insai Workbench to Claude Code or Codex: `uvx nexus-workbench setup`.
+It gives your agent an MCP server named `nexus` with nine read-only tools and ten
+skills for sleep-EEG research. Five tools work on EDF files on your own computer, with
+no account. The other four read your Workbench workspace, where sleep researchers
+review EEG recordings.
 
-**Early access.** Agent access is switched on per workspace. Ask for it at
-<https://insai.tech/workbench>.
+Local tools send nothing anywhere. Workspace tools send only your token and the request
+to the Workbench API over HTTPS. There is no telemetry.
+
+**Early access.** Agent access to a workspace is switched on per workspace. Ask for it
+at <https://insai.tech/workbench>. The local tools work without it.
 
 For research use only. Not for clinical decision-making.
 
@@ -19,21 +22,46 @@ You need [uv](https://docs.astral.sh/uv/). Then run:
 uvx nexus-workbench setup
 ```
 
+This installs the `nexus-workbench` command, registers the MCP server with Claude Code
+and Codex, copies the skills and signs you in. See [What setup does](#what-setup-does).
+
+The command is also installed as `nexus`, a shorter name for the same thing. Agent
+configs always use `nexus-workbench`.
+
+## Try it in 30 seconds (no account)
+
+```sh
+uvx nexus-workbench setup --no-login
+nexus-workbench sample
+nexus-workbench qc nexus-sample/sample_night.edf
+```
+
+`sample` writes a synthetic night into `./nexus-sample/`. Nothing in it comes from a
+recording. `qc` prints the file's format and length, and one row per channel with the
+share of ok, suspect, flat and railed epochs.
+
+Then in Claude Code or Codex, ask:
+
+> Check the signal quality of ./nexus-sample/sample_night.edf
+
+## What setup does
+
 `setup` does four things and tells you what it did:
 
 1. Installs `nexus-workbench` with `uv tool install`, so it keeps working in new
    terminals. It installs the same version that is running
-   (`nexus-workbench==<version>`). uv's own settings, such as `UV_INDEX_URL` and
-   `UV_FIND_LINKS`, apply as usual.
+   (`nexus-workbench==<version>`). uv's own settings, such as `UV_INDEX_URL`, apply as
+   usual.
 2. Registers the MCP server with Claude Code (`claude mcp add --scope user`)
    and Codex (`codex mcp add`), using the full path to the installed command.
    An agent that is not installed is skipped.
 3. Copies the packaged skills into `~/.claude/skills/` and `~/.codex/skills/`
-   (or `$CLAUDE_CONFIG_DIR/skills/` and `$CODEX_HOME/skills/`). A skill folder
-   that is already there and was not installed by this package is left alone.
-4. Signs you in to Workbench, unless you are signed in already. If no token
-   is given (you cancel, or there is no input), this step is skipped, `setup`
-   still exits 0, and it tells you to run `nexus-workbench login` next.
+   (or `$CLAUDE_CONFIG_DIR/skills/` and `$CODEX_HOME/skills/`). Each skill folder it
+   writes holds a `.nexus-workbench` marker file. A skill folder that is already there
+   and has no marker is left alone.
+4. Signs you in to Workbench, unless you are signed in already. If no sign-in is
+   finished (you cancel, or there is no input), this step is skipped, `setup` still
+   exits 0, and it tells you what to try next.
 
 Options: `--agent claude|codex|all`, `--no-login`, `--dry-run` (print every
 command and file write, change nothing), `--yes` (do not ask first). Running
@@ -43,70 +71,86 @@ command and file write, change nothing), `--yes` (do not ask first). Running
 (an agent or CI runs it), there is no one to ask, so it goes ahead as if you
 had passed `--yes`, and prints one line saying so.
 
-Then open Claude Code or Codex and ask: "list my Workbench recordings".
+A new MCP server shows up in a new agent session. Restart Claude Code or Codex after
+`setup`.
 
-### Or: the Claude Code plugin
+### Codex
 
-Instead of `setup`, Claude Code users can install the plugin. In Claude Code:
+`setup` registers the server and copies the skills for Codex too, when the `codex`
+command is on your PATH. Use `--agent codex` to set up Codex only.
+
+### Or: install the plugin
+
+Instead of `setup`, you can install the plugin. It starts the server with
+`uvx nexus-workbench mcp` and brings the skills.
+
+In Claude Code:
 
 ```text
 /plugin marketplace add Insai/nexus-workbench
 /plugin install nexus-workbench@insai
 ```
 
-The plugin starts the server with `uvx nexus-workbench mcp` and brings the
-skills. Then run `uvx nexus-workbench login` to sign in. The plugin and `setup`
-both register a server named `nexus`, so use one or the other, not both.
-
-### Testing a wheel before a release
-
-A development build is not on the package index, so `setup` run from it cannot
-install it from there. Point uv at the folder that holds the wheel:
+In Codex:
 
 ```sh
-uv build
-UV_FIND_LINKS=dist uvx --from dist/nexus_workbench-<version>-py3-none-any.whl nexus-workbench setup
+codex plugin marketplace add Insai/nexus-workbench
+codex plugin add nexus-workbench@insai
 ```
 
-Or install the wheel yourself with `uv tool install <path-to-wheel>`, then run
-`nexus-workbench setup`.
+Then run `uvx nexus-workbench login` to sign in. The plugin and `setup` both register
+a server named `nexus`, so use one or the other, not both.
+
+## Sign in
+
+`nexus-workbench login` opens Workbench in your browser. Approve this computer there,
+then type the code it shows (8 characters, like ABCD-EFGH) into the terminal. The token
+it makes lasts 90 days and is saved only on this computer.
+
+If the browser flow is not available, or you prefer a token: in Workbench open the
+account menu, choose "Connect an agent", make a token, then run
+`nexus-workbench login --token` and paste it.
+
+Instead of saving a token, you can set the `NEXUS_TOKEN` environment variable to it.
+
+Signed out, the local tools work and need no account. The workspace tools answer
+"Not signed in" and tell the agent to ask you to run `nexus-workbench login`.
 
 ## Commands
 
 | Command | What it does |
 |---|---|
 | `nexus-workbench setup` | Install, register the MCP server, install skills, sign in. |
-| `nexus-workbench login` | Sign in with a token (see [Sign in](#sign-in)). |
+| `nexus-workbench login` | Sign in: approve this computer in the browser and type the code shown. `--token` pastes a token instead. |
 | `nexus-workbench login --token` | Paste a token made in Workbench. Piped input works too: `nexus-workbench login --token < token.txt`. A token is never accepted as a command-line argument. |
 | `nexus-workbench logout` | Remove the saved token from this computer. |
 | `nexus-workbench whoami` | Show the workspace your token reads. |
 | `nexus-workbench recordings` | List recordings (`--project`, `--limit`, `--cursor`, `--json`). |
 | `nexus-workbench sample` | Write a synthetic sample night to try the local tools on (`--out`, `--hours`, `--seed`, `--force`). |
 | `nexus-workbench qc PATH` | Describe a local EDF file and check its signal quality in 30 s epochs (`--json` for the raw results). The recording must be 30 s or longer. |
-| `nexus-workbench doctor` | Check the install, the sign-in and the agent registrations. |
+| `nexus-workbench doctor` | Check the install, the sign-in and the agent registrations. Being signed out is not a failure. |
 | `nexus-workbench mcp` | Run the MCP server on stdio. Your agent starts this; you do not need to. |
 
-`nexus` is a shorter name for the same command.
+Every command has `--help`.
 
-## Sign in
+### Errors and exit codes
 
-Today you sign in with a token:
+Exit codes: 0 ok, 1 failure, 2 usage error.
 
-1. In Workbench, open the account menu and choose "Connect an agent".
-2. Make a token there and copy it.
-3. Run `nexus-workbench login --token` and paste it. The token is checked with
-   Workbench, then saved on this computer.
+Error messages carry a stable code in brackets, for example:
 
-Instead of saving it, you can set the `NEXUS_TOKEN` environment variable to the
-token. Signing in through the browser comes later.
+```text
+Not signed in (not_signed_in). Run `nexus-workbench login` in a terminal, then try again.
+```
 
-## Signed out and signed in
+With `--json` (on `whoami`, `recordings` and `qc`), an error is printed to stderr as one
+JSON object, and stdout stays empty:
 
-Signed out, the local file tools work and need no account. The workspace tools
-answer "Not signed in" and tell the agent to ask you to run
-`nexus-workbench login`.
+```json
+{"error": {"code": "not_signed_in", "message": "Not signed in. Run `nexus-workbench login` in a terminal, then try again."}}
+```
 
-Signed in, the workspace tools read your Workbench workspace.
+The codes are listed in [docs/contract.md](docs/contract.md) (sections 3.1 and 3.3).
 
 ## Tools
 
@@ -125,7 +169,7 @@ computer.
 ### Local tools (no account, no network)
 
 These read a file on your computer and send nothing anywhere. They work signed
-out. Inputs, outputs and methods are in [docs/tools.md](docs/tools.md).
+out. Inputs, outputs, methods and a Python example are in [docs/tools.md](docs/tools.md).
 
 | Tool | Returns |
 |---|---|
@@ -135,23 +179,10 @@ out. Inputs, outputs and methods are in [docs/tools.md](docs/tools.md).
 | `compare_hypnograms` | Agreement, Cohen's kappa, per-stage precision, recall and F1, and the confusion matrix for two hypnograms of one night. |
 | `compare_events` | One-to-one matching of candidate events to reference events, with precision, recall, F1 and a shuffled null. |
 
-To try them, write the synthetic sample night. Nothing in it comes from a
-recording:
-
-```sh
-nexus-workbench sample --out ./nexus-sample --hours 8
-```
-
-This writes `sample_night.edf`, two hypnograms and two event files. If sample
-files are already in the folder it stops and changes nothing; add `--force` to
-replace them. Check the EDF from the terminal:
-
-```sh
-nexus-workbench qc ./nexus-sample/sample_night.edf
-```
-
-It prints the file's format and length, and one row per channel with the share
-of ok, suspect, flat and railed epochs. Add `--json` for the full results.
+`nexus-workbench sample` writes `sample_night.edf`, two hypnograms and two event files
+into `./nexus-sample/` (`--out` picks another folder, `--hours` the length). If sample
+files are already in the folder it stops and changes nothing; add `--force` to replace
+them.
 
 In Claude Code or Codex, ask for example:
 
@@ -196,6 +227,8 @@ from them. `setup` copies them into your agent's skills folder.
   (patient name, id, birth date, the recording's free text, the start date and
   time), and never return raw signal samples. Files are
   named by an id made from their content, not by their path.
+- Sign-in sends this computer's name (cleaned and cut to 64 characters) and the
+  package version, so you can tell your tokens apart in Workbench.
 - Tokens are stored in `credentials.json`, a file only you can read
   (permissions `600`), one per Workbench server, in your user config folder:
   `~/Library/Application Support/nexus-workbench/` on macOS,
@@ -211,6 +244,8 @@ from them. `setup` copies them into your agent's skills folder.
   account menu, then "Connect an agent". `logout` only removes the copy on this
   computer.
 
+See [SECURITY.md](SECURITY.md) to report a vulnerability.
+
 ## Settings
 
 | Variable | Use |
@@ -219,6 +254,105 @@ from them. `setup` copies them into your agent's skills folder.
 | `NEXUS_API_URL` | A different Workbench API address. Must start with `https://`. |
 | `NEXUS_KEYRING` | `1` to store new tokens in the system keyring. |
 | `NEXUS_WORKBENCH_CONFIG_DIR` | The folder for the credentials file, instead of the user config folder (see [Privacy](#privacy)). `setup` passes it on to the MCP server. |
+| `NEXUS_DEBUG` | `1` to print the traceback when `qc` hits an unexpected error. |
+
+## Update
+
+```sh
+uv tool upgrade nexus-workbench
+nexus-workbench setup
+```
+
+The second line refreshes the skill copies in your agent's skills folder. It changes
+nothing else that is already in place. Check [CHANGELOG.md](CHANGELOG.md) for what
+changed.
+
+Plugin users update the plugin in their agent instead, for example
+`claude plugin update nexus-workbench@insai`.
+
+## Troubleshooting
+
+Run `nexus-workbench doctor` first. It shows the version, the sign-in and whether each
+agent has the `nexus` server registered.
+
+**The `nexus` tools do not show up in the agent.** Restart Claude Code or Codex: a new
+server is picked up by a new session. If they still do not show up, run
+`nexus-workbench doctor`. If it says the server is not registered, run
+`nexus-workbench setup` again.
+
+**"Agent access is in early access and is not switched on for this workspace yet."**
+Your token works, but your workspace does not have agent access yet. Nothing on your
+computer can change that. Ask for access at <https://insai.tech/workbench>. The local
+tools work in the meantime.
+
+**`uvx: command not found`.** Install uv. On macOS and Linux:
+
+```sh
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+On Windows, and for other ways to install it, see the
+[uv installation guide](https://docs.astral.sh/uv/getting-started/installation/).
+Open a new terminal afterwards.
+
+**`nexus-workbench: command not found` after `setup`.** The folder where uv puts
+commands is not on your PATH yet. Run `uv tool update-shell`, then open a new terminal.
+Until then, `uvx nexus-workbench <command>` works too.
+
+**"Your Workbench token has expired."** Run `nexus-workbench login` to sign in again.
+Tokens last 90 days by default.
+
+**"Not signed in" although you signed in.** If you set `NEXUS_WORKBENCH_CONFIG_DIR` or
+`NEXUS_API_URL` after running `setup`, the agent may look in another place. Run
+`nexus-workbench setup` again so the server gets the same settings.
+
+**An EDF+D file is refused.** `check_signal_quality`, `compute_band_power` and `qc`
+refuse discontinuous EDF+D recordings: their data records have gaps, and the epoch
+maths assumes there are none. `inspect_edf` still describes the file. Export the
+recording as continuous EDF or EDF+C. 24-bit BDF files are not supported.
+
+**"Something went wrong while reading the file."** Check that the file is a 16-bit EDF
+or EDF+ file. To see the details, rerun with `NEXUS_DEBUG=1`, for example
+`NEXUS_DEBUG=1 nexus-workbench qc night.edf`. Include that output, with any file paths
+removed, if you open an issue.
+
+**Windows.** The commands are the same in PowerShell. The credentials file is in
+`%LOCALAPPDATA%\nexus-workbench\`, inside your own user folder; Windows does not use
+the `600` file permission.
+
+## Uninstall
+
+Remove the parts that `setup` added, in this order:
+
+```sh
+claude mcp remove --scope user nexus
+codex mcp remove nexus
+nexus-workbench logout
+uv tool uninstall nexus-workbench
+```
+
+Then remove the skill folders `setup` copied. They are in `~/.claude/skills/` and
+`~/.codex/skills/` (or `$CLAUDE_CONFIG_DIR/skills/` and `$CODEX_HOME/skills/`), and
+each one holds a `.nexus-workbench` marker file. This removes only folders with the
+marker:
+
+```sh
+find ~/.claude/skills ~/.codex/skills -mindepth 2 -maxdepth 2 -name .nexus-workbench 2>/dev/null |
+  while read -r marker; do rm -rf "$(dirname "$marker")"; done
+```
+
+`logout` removes the token from this computer only. To revoke it, use the
+"Connect an agent" page in Workbench.
+
+If you installed the plugin instead, run `claude plugin uninstall nexus-workbench@insai`
+or `codex plugin remove nexus-workbench@insai`.
+
+## Contributing and security
+
+- [CONTRIBUTING.md](CONTRIBUTING.md): set up a development copy, run the tests, and the
+  rules for changes.
+- [SECURITY.md](SECURITY.md): report a vulnerability privately.
+- [CHANGELOG.md](CHANGELOG.md): what changed in each release.
 
 ## Licence
 
