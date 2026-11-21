@@ -32,5 +32,8 @@ The first release.
 - Plugins for Claude Code (`.claude-plugin/`) and Codex (`.codex-plugin/`), from the
   `insai` marketplace in this repository.
 - The local tools as a Python module, `nexus_workbench.local.api`.
+- Releases from a version tag: the package goes to PyPI with trusted publishing, and the
+  GitHub release gets the changelog section as notes. `scripts/bump_version.py` sets the
+  version in all four places it is written.
 
 [0.1.0]: https://github.com/Insai/nexus-workbench/releases

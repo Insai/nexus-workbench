@@ -64,6 +64,71 @@ first.
 - **Changelog.** Add a line under the unreleased version in
   [CHANGELOG.md](CHANGELOG.md).
 
+## Releasing
+
+Pushing a tag like `v1.2.3` runs [.github/workflows/release.yml](.github/workflows/release.yml).
+It checks that the tag matches the version in the package, runs the checks, builds,
+publishes to PyPI and creates a GitHub release with the changelog section as notes and
+the built files attached.
+
+The version is written in four places: `pyproject.toml`,
+`src/nexus_workbench/__init__.py`, `.claude-plugin/plugin.json` and
+`.codex-plugin/plugin.json`. `scripts/bump_version.py` sets all four, and a test fails
+if they differ.
+
+1. Set the version:
+
+   ```sh
+   python scripts/bump_version.py 1.2.3
+   ```
+
+2. In [CHANGELOG.md](CHANGELOG.md), replace `unreleased` in the `## [1.2.3]` heading
+   with today's date, like `## [1.2.3] – 2030-01-31`.
+3. Check that the release will be accepted, then run the checks above:
+
+   ```sh
+   python scripts/bump_version.py --check v1.2.3
+   ```
+
+4. Commit on `main` and push the commit.
+5. Tag and push the tag:
+
+   ```sh
+   git tag v1.2.3
+   git push origin v1.2.3
+   ```
+
+6. Approve the `pypi` deployment in the Actions run, if the environment asks for it.
+7. After the release, set the next development version, like
+   `python scripts/bump_version.py 1.2.4.dev0`, and add a new unreleased section to the
+   changelog.
+
+The release stops before publishing if any of the four versions differs from the tag,
+if a version contains `dev`, or if the changelog section is missing or still says
+unreleased.
+
+To try the build without publishing, run the Release workflow by hand from the Actions
+tab. It builds and uploads `dist/` as an artifact, and skips PyPI and the GitHub
+release.
+
+### One-time setup
+
+PyPI uses trusted publishing, so there is no token to store.
+
+1. On PyPI, open Your account, then Publishing, and add a pending publisher under
+   GitHub (it turns into a normal trusted publisher on the first upload):
+   - PyPI project name: `nexus-workbench`
+   - Owner: `Insai`
+   - Repository name: `nexus-workbench`
+   - Workflow name: `release.yml`
+   - Environment name: `pypi`
+2. On GitHub, open the repository's Settings, then Environments, and create an
+   environment named `pypi`:
+   - Required reviewers: add at least one maintainer, so every upload waits for a
+     person to approve it.
+   - Deployment branches and tags: choose selected branches and tags, and add the tag
+     rule `v*.*.*`.
+
 ## Report a problem
 
 Open an issue with the bug report or feature request form. For a security problem, see
