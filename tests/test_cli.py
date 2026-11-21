@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import io
 import json
 import shlex
@@ -511,7 +512,41 @@ def test_whoami(api: FakeAPI, capsys) -> None:
 
 def test_whoami_signed_out(api: FakeAPI, capsys) -> None:
     assert cli.main(["whoami"]) == 1
-    assert "nexus-workbench login" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert err == (
+        "Not signed in (not_signed_in). Run `nexus-workbench login` in a terminal, "
+        "then try again.\n"
+    )
+
+
+@pytest.mark.parametrize("command", [["whoami", "--json"], ["recordings", "--json"]])
+def test_json_errors_are_json_on_stderr(api: FakeAPI, capsys, command: list[str]) -> None:
+    assert cli.main(command) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    error = json.loads(captured.err)["error"]
+    assert error["code"] == "not_signed_in"
+    assert error["message"].startswith("Not signed in.")
+    assert "(not_signed_in)" not in error["message"]
+
+
+def test_server_error_codes_reach_the_cli(api: FakeAPI, capsys) -> None:
+    auth.save_token(API_BASE, api.add_token(expired=True))
+    assert cli.main(["recordings"]) == 1
+    assert "Your Workbench token has expired (token_expired)." in capsys.readouterr().err
+    assert cli.main(["recordings", "--json"]) == 1
+    assert json.loads(capsys.readouterr().err)["error"]["code"] == "token_expired"
+
+
+def test_recordings_bad_limit_json(api: FakeAPI, capsys) -> None:
+    assert cli.main(["recordings", "--limit", "500", "--json"]) == 2
+    error = json.loads(capsys.readouterr().err)["error"]
+    assert error == {"code": "usage", "message": "--limit must be from 1 to 100 (got 500)."}
+
+
+def test_with_code() -> None:
+    assert cli.with_code("x", "It broke.", "Try again.") == "It broke (x). Try again."
+    assert cli.with_code("x", "It broke") == "It broke (x)."
 
 
 def test_logout(api: FakeAPI, capsys) -> None:
@@ -588,11 +623,26 @@ def test_doctor_ok(api: FakeAPI, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     assert "Codex:" in out and "registered (/x/nexus-workbench mcp)" in out
 
 
+def test_doctor_signed_out_is_not_a_failure(
+    api: FakeAPI, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    monkeypatch.setenv("PATH", "/nonexistent")
+    assert cli.main(["doctor"]) == 0
+    captured = capsys.readouterr()
+    assert (
+        "Token: none (local tools work without one). "
+        "Run `nexus-workbench login` for the workspace tools."
+    ) in captured.out
+    assert "Some checks failed" not in captured.err
+
+
 def test_doctor_reports_failure(api: FakeAPI, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     monkeypatch.setenv("PATH", "/nonexistent")
+    monkeypatch.setenv("NEXUS_TOKEN", "nxs_pat_not-a-token")
     assert cli.main(["doctor"]) == 1
-    out = capsys.readouterr().out
-    assert "Token: none" in out
+    captured = capsys.readouterr()
+    assert "Token: not usable" in captured.out
+    assert "Some checks failed" in captured.err
 
 
 def test_doctor_flushes_stdout_before_the_failure_summary(
@@ -621,12 +671,13 @@ def test_doctor_flushes_stdout_before_the_failure_summary(
             return len(text)
 
     monkeypatch.setenv("PATH", "/nonexistent")
+    monkeypatch.setenv("NEXUS_TOKEN", "nxs_pat_not-a-token")
     monkeypatch.setattr("sys.stdout", Buffered())
     monkeypatch.setattr("sys.stderr", Unbuffered())
     assert cli.main(["doctor"]) == 1
     assert order, "nothing was written"
     assert "Some checks failed" in order[-1]
-    assert any("Token: none" in line for line in order[:-1])
+    assert any("Token: not usable" in line for line in order[:-1])
 
 
 def test_doctor_env_token_precise_failure(
@@ -638,7 +689,7 @@ def test_doctor_env_token_precise_failure(
     assert cli.main(["doctor"]) == 1
     out = capsys.readouterr().out
     assert "from env" in out
-    assert "expired" in out
+    assert "expired (token_expired)" in out
     assert token not in out
 
 
@@ -729,6 +780,49 @@ def test_sample_then_qc(tmp_path: Path, capsys) -> None:
     assert data["check_signal_quality"]["nEpochs"] == 120
 
 
+@pytest.mark.parametrize(("hours", "size"), [("8", "about 24 MB"), ("0.5", "about 1.5 MB")])
+def test_sample_says_what_it_writes_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys, hours: str, size: str
+) -> None:
+    from nexus_workbench.local import sample  # noqa: PLC0415
+
+    seen: list[str] = []
+
+    def fake(out_dir: str, hours: float, seed: int) -> dict[str, str]:
+        seen.append(capsys.readouterr().out)  # what was printed before the work started
+        return {
+            k: f"{out_dir}/{k}"
+            for k in ("edf", "hypnogram", "hypnogramScorer2", "eventsReference", "eventsCandidate")
+        }
+
+    monkeypatch.setattr(sample, "make_sample_night", fake)
+    assert cli.main(["sample", "--out", str(tmp_path / "s"), "--hours", hours]) == 0
+    assert seen == [f"Writing a sample night of {hours} hours ({size})…\n"]
+
+
+def test_sample_size_estimate_matches_the_file(tmp_path: Path) -> None:
+    from nexus_workbench.local import sample  # noqa: PLC0415
+
+    night = sample.make_sample_night(str(tmp_path), hours=1)
+    actual = Path(night["edf"]).stat().st_size
+    assert abs(sample.approx_edf_bytes(1) - actual) / actual < 0.01
+
+
+def test_every_command_has_a_description() -> None:
+    parser = cli.build_parser()
+    sub = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
+    for name, command in sub.choices.items():
+        assert command.description, name
+        for action in command._actions:
+            if action.dest != "help":
+                assert action.help, f"{name} {action.dest}"
+    setup_help = sub.choices["setup"].format_help()
+    assert "nexus-workbench sample && nexus-workbench qc nexus-sample/sample_night.edf" in (
+        setup_help
+    )
+    assert "which agent to set up" in setup_help
+
+
 def test_sample_bad_hours(tmp_path: Path, capsys) -> None:
     assert cli.main(["sample", "--out", str(tmp_path), "--hours", "0.1"]) == 2
     assert "--hours" in capsys.readouterr().err
@@ -761,10 +855,33 @@ def test_qc_unexpected_error_is_one_plain_line(
         raise RuntimeError(f"internal detail {path}")
 
     monkeypatch.setattr(local_api, "inspect_edf", boom)
+    monkeypatch.delenv("NEXUS_DEBUG", raising=False)
     assert cli.main(["qc", str(tmp_path / "x.edf")]) == 1
     err = capsys.readouterr().err
     assert "Traceback" not in err and "internal detail" not in err
     assert err.count("\n") == 1
+    assert "(local_unexpected)" in err and "RuntimeError" in err
+    assert "Rerun with NEXUS_DEBUG=1 to see the details." in err
+
+    monkeypatch.setenv("NEXUS_DEBUG", "1")
+    assert cli.main(["qc", str(tmp_path / "x.edf")]) == 1
+    err = capsys.readouterr().err
+    assert "Traceback" in err and "internal detail" in err
+    assert err.rstrip().splitlines()[-1].startswith("Something went wrong while reading the file")
+
+    monkeypatch.setenv("NEXUS_DEBUG", "0")
+    assert cli.main(["qc", str(tmp_path / "x.edf"), "--json"]) == 1
+    err = capsys.readouterr().err
+    assert "Traceback" not in err
+    assert json.loads(err)["error"]["code"] == "local_unexpected"
+
+
+def test_qc_file_errors_have_a_code(tmp_path: Path, capsys) -> None:
+    assert cli.main(["qc", str(tmp_path / "missing.edf")]) == 1
+    assert "(local_file)" in capsys.readouterr().err
+    assert cli.main(["qc", str(tmp_path / "missing.edf"), "--json"]) == 1
+    error = json.loads(capsys.readouterr().err)["error"]
+    assert error["code"] == "local_file" and "missing.edf was not found" in error["message"]
 
 
 def test_qc_short_file_hint_fits_the_cli(tmp_path: Path, capsys) -> None:

@@ -1,6 +1,10 @@
 """Command line: ``nexus-workbench`` (also installed as ``nexus``).
 
 Exit codes: 0 ok, 1 failure, 2 usage.
+
+Error messages name a stable code in brackets, for example ``(not_signed_in)`` (contract
+section 3.3). With ``--json`` an error is printed to stderr as
+``{"error": {"code": ..., "message": ...}}``.
 """
 
 from __future__ import annotations
@@ -12,6 +16,8 @@ import platform
 import shlex
 import shutil
 import sys
+import textwrap
+import traceback
 from collections.abc import Sequence
 from typing import Any
 
@@ -28,11 +34,44 @@ from .login import LoginCancelled, LoginFailed, LoginIO, describe_result, run_lo
 
 OK, FAILURE, USAGE = 0, 1, 2
 
+#: Set to 1 to print the traceback of an unexpected error.
+ENV_DEBUG = "NEXUS_DEBUG"
+DEBUG_HINT = f"Rerun with {ENV_DEBUG}=1 to see the details."
+#: Codes for errors that only the command line raises (contract section 3.3).
+USAGE_CODE = "usage"
+LOCAL_FILE_CODE = "local_file"
+LOCAL_UNEXPECTED_CODE = "local_unexpected"
+
 
 def _err(text: str) -> None:
     # stdout may be buffered (a pipe): flush it first so messages stay in order.
     sys.stdout.flush()
     print(text, file=sys.stderr)
+
+
+def with_code(code: str, message: str, hint: str = "") -> str:
+    """``message`` with its code in brackets, then the hint: "Not signed in (not_signed_in). …"."""
+    head = message.strip()
+    if head.endswith("."):
+        head = head[:-1]
+    return f"{head} ({code}). {hint}".strip()
+
+
+def _fail(code: str, message: str, hint: str = "", *, as_json: bool = False) -> None:
+    """Print one error on stderr: a line with the code, or a JSON error object."""
+    if as_json:
+        text = f"{message.strip()} {hint}".strip()
+        _err(json.dumps({"error": {"code": code, "message": text}}, ensure_ascii=False))
+    else:
+        _err(with_code(code, message, hint))
+
+
+def _fail_workbench(exc: WorkbenchError, *, as_json: bool = False) -> None:
+    _fail(exc.code, exc.message, exc.hint, as_json=as_json)
+
+
+def _debug() -> bool:
+    return os.environ.get(ENV_DEBUG, "").strip() not in ("", "0")
 
 
 def _client() -> WorkbenchClient:
@@ -65,7 +104,7 @@ def do_login(
         _err(str(exc))
         return FAILURE
     except WorkbenchError as exc:
-        _err(str(exc))
+        _fail_workbench(exc)
         return FAILURE
     describe_result(result, io)
     if os.environ.get(auth.ENV_TOKEN):
@@ -104,7 +143,7 @@ def cmd_whoami(args: argparse.Namespace) -> int:
         try:
             data = client.call("whoami")
         except WorkbenchError as exc:
-            _err(str(exc))
+            _fail_workbench(exc, as_json=args.json)
             return FAILURE
     if args.json:
         print(json.dumps(data, indent=2))
@@ -172,7 +211,7 @@ def format_recordings_table(rows: list[dict[str, Any]]) -> str:
 
 def cmd_recordings(args: argparse.Namespace) -> int:
     if not 1 <= args.limit <= 100:
-        _err("--limit must be between 1 and 100.")
+        _fail(USAGE_CODE, f"--limit must be from 1 to 100 (got {args.limit}).", as_json=args.json)
         return USAGE
     with _client() as client:
         try:
@@ -180,7 +219,7 @@ def cmd_recordings(args: argparse.Namespace) -> int:
                 "list_recordings", projectId=args.project, limit=args.limit, cursor=args.cursor
             )
         except WorkbenchError as exc:
-            _err(str(exc))
+            _fail_workbench(exc, as_json=args.json)
             return FAILURE
     if args.json:
         print(json.dumps(data, indent=2))
@@ -203,7 +242,7 @@ def cmd_recordings(args: argparse.Namespace) -> int:
 
 
 def cmd_sample(args: argparse.Namespace) -> int:
-    from .local.sample import FILE_NAMES, make_sample_night  # noqa: PLC0415
+    from .local.sample import FILE_NAMES, approx_edf_bytes, make_sample_night  # noqa: PLC0415
 
     if not 0.5 <= args.hours <= 24:
         _err("--hours must be between 0.5 and 24.")
@@ -219,6 +258,10 @@ def cmd_sample(args: argparse.Namespace) -> int:
             "replace them, or pass another folder with --out."
         )
         return FAILURE
+    size = approx_edf_bytes(args.hours) / 1e6
+    size_text = f"{size:.0f}" if size >= 10 else f"{size:.1f}"
+    unit = "hour" if args.hours == 1 else "hours"
+    print(f"Writing a sample night of {args.hours:g} {unit} (about {size_text} MB)…", flush=True)
     try:
         night = make_sample_night(args.out, hours=args.hours, seed=args.seed)
     except OSError as exc:
@@ -283,12 +326,17 @@ def cmd_qc(args: argparse.Namespace) -> int:
         quality = api.check_signal_quality(args.path)
     except LocalToolError as exc:
         # qc always uses 30 s epochs, so the tools' epoch_sec advice does not apply here.
-        _err(exc.message.replace(api.SHORT_FILE_HINT, "qc needs a recording of 30 s or more."))
+        message = exc.message.replace(api.SHORT_FILE_HINT, "qc needs a recording of 30 s or more.")
+        _fail(LOCAL_FILE_CODE, message, as_json=args.json)
         return FAILURE
-    except Exception as exc:  # noqa: BLE001  (one plain line, never a traceback)
-        _err(
-            "Something went wrong while reading the file "
-            f"({type(exc).__name__}). Check that it is a 16-bit EDF or EDF+ file."
+    except Exception as exc:  # noqa: BLE001  (one plain line; the traceback only on request)
+        if _debug():
+            traceback.print_exc()
+        _fail(
+            LOCAL_UNEXPECTED_CODE,
+            f"Something went wrong while reading the file: {type(exc).__name__}.",
+            f"Check that it is a 16-bit EDF or EDF+ file. {DEBUG_HINT}",
+            as_json=args.json,
         )
         return FAILURE
     if args.json:
@@ -322,9 +370,11 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         if stored.token:
             print(f"Token: from {stored.source} ({stored.masked})")
             token_ok = True
-        else:
-            print("Token: none. Run `nexus-workbench login`.")
-            ok = False
+        else:  # signed out is fine: the local tools need no token
+            print(
+                "Token: none (local tools work without one). "
+                "Run `nexus-workbench login` for the workspace tools."
+            )
     except (auth.CredentialsError, auth.InvalidTokenError) as exc:
         print(f"Token: not usable. {exc}")
         ok = False
@@ -337,7 +387,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             expires = _safe((data.get("token") or {}).get("expiresAt")) or "unknown"
             print(f"Workbench: signed in to {workspace}, token expires {expires}")
         except WorkbenchError as exc:
-            print(f"Workbench: {exc}")
+            print(f"Workbench: {with_code(exc.code, exc.message, exc.hint)}")
             ok = False
 
     runner = setup_cmd.Runner(dry_run=True)
@@ -412,14 +462,49 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"nexus-workbench {__version__}")
     sub = parser.add_subparsers(dest="command", metavar="COMMAND")
 
-    p = sub.add_parser("setup", help="add Workbench to Claude Code and Codex (start here)")
-    p.add_argument("--agent", choices=["claude", "codex", "all"], default="all")
+    def add(name: str, summary: str, description: str, **kwargs: Any) -> argparse.ArgumentParser:
+        return sub.add_parser(
+            name,
+            help=summary,
+            description=textwrap.fill(description, 79),
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+            **kwargs,
+        )
+
+    p = add(
+        "setup",
+        "add Workbench to Claude Code and Codex (start here)",
+        "Install nexus-workbench as a uv tool, register the MCP server `nexus` with Claude "
+        "Code and Codex, copy the skills, and sign in. It asks before it changes anything, and "
+        "running it again changes nothing that is already in place.",
+        epilog=(
+            "examples:\n"
+            "  uvx nexus-workbench setup             everything, for both agents\n"
+            "  uvx nexus-workbench setup --no-login  no account: local tools only\n"
+            "  nexus-workbench setup --dry-run       show what would change\n"
+            "\n"
+            "Then try the local tools:\n"
+            "  nexus-workbench sample && nexus-workbench qc nexus-sample/sample_night.edf"
+        ),
+    )
+    p.add_argument(
+        "--agent",
+        choices=["claude", "codex", "all"],
+        default="all",
+        help="which agent to set up (default all; an agent that is not installed is skipped)",
+    )
     p.add_argument("--no-login", action="store_true", help="do not sign in")
     p.add_argument("--dry-run", action="store_true", help="print what would happen, change nothing")
     p.add_argument("--yes", "-y", action="store_true", help="do not ask before making changes")
     p.set_defaults(func=cmd_setup)
 
-    p = sub.add_parser("login", help="sign in to Workbench")
+    p = add(
+        "login",
+        "sign in to Workbench",
+        "Sign in to Workbench. It opens Workbench in your browser: approve this computer there, "
+        "then type the code it shows. With --token, paste a token made on the Connect an agent "
+        "page instead. The token is saved only on this computer.",
+    )
     p.add_argument(
         "--token",
         action="store_true",
@@ -428,21 +513,39 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--keyring", action="store_true", help="store the token in the system keyring")
     p.set_defaults(func=cmd_login)
 
-    p = sub.add_parser("logout", help="remove the saved token from this computer")
+    p = add(
+        "logout",
+        "remove the saved token from this computer",
+        "Remove the saved token from this computer. The token keeps working until you revoke "
+        "it in Workbench (account menu, then Connect an agent).",
+    )
     p.set_defaults(func=cmd_logout)
 
-    p = sub.add_parser("whoami", help="show the workspace this sign-in reads")
+    p = add(
+        "whoami",
+        "show the workspace this sign-in reads",
+        "Show the workspace your token reads, your role, and the token's name and expiry.",
+    )
     p.add_argument("--json", action="store_true", help="print the raw JSON")
     p.set_defaults(func=cmd_whoami)
 
-    p = sub.add_parser("recordings", help="list recordings")
+    p = add(
+        "recordings",
+        "list recordings",
+        "List one page of recordings in your workspace, newest first. Needs sign-in.",
+    )
     p.add_argument("--project", help="only this project id")
     p.add_argument("--limit", type=int, default=50, help="rows, 1 to 100 (default 50)")
     p.add_argument("--cursor", help="cursor printed by the previous page")
     p.add_argument("--json", action="store_true", help="print the raw JSON")
     p.set_defaults(func=cmd_recordings)
 
-    p = sub.add_parser("sample", help="write a synthetic sample night to try the local tools on")
+    p = add(
+        "sample",
+        "write a synthetic sample night to try the local tools on",
+        "Write a synthetic night (an EDF file, two hypnograms and two event files) to try the "
+        "local tools on. Nothing in it comes from a recording. An 8 hour night is about 24 MB.",
+    )
     p.add_argument(
         "--out", default="nexus-sample", help="folder to write to (default ./nexus-sample)"
     )
@@ -456,15 +559,31 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.set_defaults(func=cmd_sample)
 
-    p = sub.add_parser("qc", help="describe a local EDF file and check its signal quality")
+    p = add(
+        "qc",
+        "describe a local EDF file and check its signal quality",
+        "Describe a local EDF or EDF+ file and check its signal quality in 30 s epochs. "
+        "The file is read on this computer and nothing is sent anywhere. No account needed.",
+        epilog="example:\n  nexus-workbench qc nexus-sample/sample_night.edf",
+    )
     p.add_argument("path", help="EDF or EDF+ file on this computer")
     p.add_argument("--json", action="store_true", help="print the raw results as JSON")
     p.set_defaults(func=cmd_qc)
 
-    p = sub.add_parser("doctor", help="check the install and the sign-in")
+    p = add(
+        "doctor",
+        "check the install and the sign-in",
+        "Check the install, the sign-in and the agent registrations. Being signed out is not "
+        "a failure: the local tools work without a token. It exits 1 only when a check fails.",
+    )
     p.set_defaults(func=cmd_doctor)
 
-    p = sub.add_parser("mcp", help="run the MCP server on stdio (agents start this)")
+    p = add(
+        "mcp",
+        "run the MCP server on stdio (agents start this)",
+        "Run the MCP server `nexus` on stdio. Claude Code or Codex starts this; you do not "
+        "need to run it yourself.",
+    )
     p.set_defaults(func=cmd_mcp)
     return parser
 
@@ -481,7 +600,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         _err("Stopped.")
         return FAILURE
     except WorkbenchError as exc:
-        _err(str(exc))
+        _fail_workbench(exc, as_json=bool(getattr(args, "json", False)))
         return FAILURE
 
 

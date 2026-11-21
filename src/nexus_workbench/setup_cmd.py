@@ -40,6 +40,8 @@ COMMAND_TIMEOUT = 300
 #: The login callback returns this when no token was given (cancelled, or no input).
 #: That is a skipped step, not a failure.
 LOGIN_SKIPPED = 3
+#: The first thing to ask the agent when there is no sign-in yet.
+LOCAL_PROMPT = "Check the signal quality of ./nexus-sample/sample_night.edf"
 FAILURE_LINES = 5
 FAILURE_TEXT_LIMIT = 600
 _FAILURE_MARKERS = ("error", "not found", "×", "unsatisfiable", "no solution")
@@ -662,7 +664,12 @@ def run_setup(
         runner.say("Some steps did not finish. Fix the problems above, then run setup again.")
     else:
         first = "Claude Code" if "claude" in available else "Codex"
-        if not signed_in:
-            runner.say("Next: run `nexus-workbench login` to sign in to Workbench.")
-        runner.say(f"Next: open {first} and ask: 'list my Workbench recordings'")
+        if signed_in:
+            runner.say(f"Next: open {first} and ask: 'list my Workbench recordings'")
+        else:
+            runner.say(
+                "Next: try the local tools, no account needed. Run `nexus-workbench sample`, "
+                f"then open {first} and ask: '{LOCAL_PROMPT}'"
+            )
+            runner.say("For the workspace tools, run `nexus-workbench login` to sign in.")
     return 1 if failed else 0

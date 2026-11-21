@@ -56,6 +56,17 @@ CANDIDATE_EXTRA_FRACTION = 0.1
 CANDIDATE_SHIFT_SEC = 0.2
 
 
+#: Bytes per second of the sample EDF: 4 signals at 100 Hz, 2 bytes a sample, plus the 16-sample
+#: EDF+ annotation signal.
+EDF_BYTES_PER_SEC = (len(LABELS) * FS + 16) * 2
+
+
+def approx_edf_bytes(hours: float) -> int:
+    """About how many bytes ``sample_night.edf`` takes for a night of ``hours``."""
+    n_ep = int(round(float(hours) * 3600 / EPOCH_SEC))
+    return n_ep * EPOCH_SEC * EDF_BYTES_PER_SEC
+
+
 def _stages(n: int, rng: np.random.Generator) -> np.ndarray:
     """A made-up stage sequence of ``n`` epochs with roughly 90 minute cycles."""
     seq: list[int] = [_W] * 20

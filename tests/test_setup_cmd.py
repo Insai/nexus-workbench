@@ -244,8 +244,11 @@ def test_persistent_install_registers_absolute_path(env: Env) -> None:
     assert codex_entry["command"] == command and codex_entry["args"] == ["mcp"]
     assert not any(c[0] == "uv" and c[1:3] == ["tool", "install"] for c in env.calls())
     assert "no skills packaged" in out
-    assert "Next: run `nexus-workbench login`" in out
-    assert "list my Workbench recordings" in out
+    assert "run `nexus-workbench login` to sign in" in out
+    # Signed out, the last line points at the local tools, which work without a token.
+    assert "list my Workbench recordings" not in out
+    assert "`nexus-workbench sample`" in out
+    assert setup_cmd.LOCAL_PROMPT in out
 
 
 def test_idempotent(env: Env) -> None:
@@ -538,7 +541,9 @@ def test_login_runs_when_signed_out(env: Env) -> None:
     assert len(calls) == 1
     assert calls[0].api_base == PRODUCTION_API_BASE
     assert "Signed in to Workbench" in out
-    assert "Next: run `nexus-workbench login`" not in out
+    assert "nexus-workbench login" not in out.split("Summary")[1]
+    assert "list my Workbench recordings" in out
+    assert setup_cmd.LOCAL_PROMPT not in out
 
 
 def test_login_failure_makes_setup_fail(env: Env) -> None:
@@ -556,7 +561,8 @@ def test_no_token_is_a_skipped_step_not_a_failure(env: Env) -> None:
     assert code == 0, err
     assert "did not finish" not in out
     assert "skipped: no token was given" in out
-    assert "Next: run `nexus-workbench login`" in out
+    assert "run `nexus-workbench login` to sign in" in out
+    assert out.rstrip().splitlines()[-2].startswith("Next: try the local tools")
 
 
 def test_noninteractive_setup_without_token_exits_0(
