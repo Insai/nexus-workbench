@@ -333,12 +333,18 @@ A wrong `pollSecret` gives `login_expired` and does not use up an attempt.
 - `get` on an unknown session returns `{"status": "expired"}`. A session that
   is out of attempts also reads `expired`.
 - While a session is pending, any signed-in person who opens the link sees
-  the full details. After approval only the approver does; everyone else gets
+  the full details. After approval only the approver does, for every later
+  status (`approved`, `used`, `denied`, `expired`), so a page can poll `get`
+  to see when the terminal used the code; everyone else gets
   `{"status": "…"}` alone.
 - `workspaces` lists up to 100 active workspaces the person belongs to,
   sorted by name.
 - `approve` is refused with `forbidden`, `early_access_required`,
-  `token_limit`, or `login_expired` if the session is no longer pending.
+  `token_limit`, or `login_expired` if the session is no longer pending. It
+  also returns `unauthenticated` (not signed in) and `invalid_argument` (a
+  malformed session or workspace id). Membership and early access are checked
+  before the session state, so an expired session approved for a workspace
+  without access reads `early_access_required`.
 - Any signed-in person can deny a pending session. Only the approver can deny
   an approved one; others get `forbidden`. Denying a denied session returns
   `{"status": "denied"}` again. Denying an expired or used session returns
