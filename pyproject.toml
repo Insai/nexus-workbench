@@ -32,6 +32,8 @@ keyring = ["keyring>=25"]
 
 [project.urls]
 Homepage = "https://insai.tech/workbench"
+Repository = "https://github.com/Insai/nexus-workbench"
+Issues = "https://github.com/Insai/nexus-workbench/issues"
 
 [project.scripts]
 nexus-workbench = "nexus_workbench.cli:main"
@@ -39,6 +41,9 @@ nexus = "nexus_workbench.cli:main"
 
 [dependency-groups]
 dev = ["pytest>=8", "pytest-cov>=5", "ruff>=0.6", "respx>=0.21"]
+
+[tool.hatch.build.targets.sdist]
+exclude = ["uv.lock", ".gitignore", ".wt"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/nexus_workbench"]
