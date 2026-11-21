@@ -22,20 +22,54 @@ uvx nexus-workbench setup
 `setup` does four things and tells you what it did:
 
 1. Installs `nexus-workbench` with `uv tool install`, so it keeps working in new
-   terminals.
+   terminals. It installs the same version that is running
+   (`nexus-workbench==<version>`). uv's own settings, such as `UV_INDEX_URL` and
+   `UV_FIND_LINKS`, apply as usual.
 2. Registers the MCP server with Claude Code (`claude mcp add --scope user`)
    and Codex (`codex mcp add`), using the full path to the installed command.
    An agent that is not installed is skipped.
 3. Copies the packaged skills into `~/.claude/skills/` and `~/.codex/skills/`
    (or `$CLAUDE_CONFIG_DIR/skills/` and `$CODEX_HOME/skills/`). A skill folder
    that is already there and was not installed by this package is left alone.
-4. Signs you in to Workbench with a token, unless you are signed in already.
+4. Signs you in to Workbench, unless you are signed in already. If no token
+   is given (you cancel, or there is no input), this step is skipped, `setup`
+   still exits 0, and it tells you to run `nexus-workbench login` next.
 
 Options: `--agent claude|codex|all`, `--no-login`, `--dry-run` (print every
 command and file write, change nothing), `--yes` (do not ask first). Running
 `setup` again changes nothing that is already in place.
 
+`setup` asks before it changes anything. When standard input is not a terminal
+(an agent or CI runs it), there is no one to ask, so it goes ahead as if you
+had passed `--yes`, and prints one line saying so.
+
 Then open Claude Code or Codex and ask: "list my Workbench recordings".
+
+### Or: the Claude Code plugin
+
+Instead of `setup`, Claude Code users can install the plugin. In Claude Code:
+
+```text
+/plugin marketplace add Insai/nexus-workbench
+/plugin install nexus-workbench@insai
+```
+
+The plugin starts the server with `uvx nexus-workbench mcp` and brings the
+skills. Then run `uvx nexus-workbench login` to sign in. The plugin and `setup`
+both register a server named `nexus`, so use one or the other, not both.
+
+### Testing a wheel before a release
+
+A development build is not on the package index, so `setup` run from it cannot
+install it from there. Point uv at the folder that holds the wheel:
+
+```sh
+uv build
+UV_FIND_LINKS=dist uvx --from dist/nexus_workbench-<version>-py3-none-any.whl nexus-workbench setup
+```
+
+Or install the wheel yourself with `uv tool install <path-to-wheel>`, then run
+`nexus-workbench setup`.
 
 ## Commands
 
@@ -162,8 +196,12 @@ from them. `setup` copies them into your agent's skills folder.
   (patient name, id, birth date, the recording's free text, the start date and
   time), and never return raw signal samples. Files are
   named by an id made from their content, not by their path.
-- Tokens are stored in a file only you can read (permissions `600`) in your
-  user config folder, one per Workbench server. `nexus-workbench login
+- Tokens are stored in `credentials.json`, a file only you can read
+  (permissions `600`), one per Workbench server, in your user config folder:
+  `~/Library/Application Support/nexus-workbench/` on macOS,
+  `$XDG_CONFIG_HOME/nexus-workbench/` (by default `~/.config/nexus-workbench/`)
+  on Linux, and `%LOCALAPPDATA%\nexus-workbench\` on Windows. Set
+  `NEXUS_WORKBENCH_CONFIG_DIR` to use another folder. `nexus-workbench login
   --keyring` (or `NEXUS_KEYRING=1`) stores the token in the system keyring
   instead; install `nexus-workbench[keyring]` for that. The `NEXUS_TOKEN`
   environment variable, if set, is used before the saved token.
@@ -180,6 +218,7 @@ from them. `setup` copies them into your agent's skills folder.
 | `NEXUS_TOKEN` | A token to use instead of the saved one. |
 | `NEXUS_API_URL` | A different Workbench API address. Must start with `https://`. |
 | `NEXUS_KEYRING` | `1` to store new tokens in the system keyring. |
+| `NEXUS_WORKBENCH_CONFIG_DIR` | The folder for the credentials file, instead of the user config folder (see [Privacy](#privacy)). `setup` passes it on to the MCP server. |
 
 ## Licence
 

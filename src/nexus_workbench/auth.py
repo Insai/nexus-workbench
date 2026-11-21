@@ -33,6 +33,7 @@ KEYRING_SERVICE = APP_NAME
 
 ENV_TOKEN = "NEXUS_TOKEN"  # noqa: S105 - a variable name
 ENV_KEYRING = "NEXUS_KEYRING"
+ENV_CONFIG_DIR = "NEXUS_WORKBENCH_CONFIG_DIR"
 
 _MAKE_ONE_HINT = 'Make a new one in Workbench: account menu, then "Connect an agent".'
 
@@ -110,6 +111,13 @@ def mask_token(token: str | None) -> str:
 
 
 def config_dir() -> Path:
+    """Where the credentials file lives: ``NEXUS_WORKBENCH_CONFIG_DIR``, else the user config
+    folder (macOS ``~/Library/Application Support/nexus-workbench``, Linux
+    ``$XDG_CONFIG_HOME/nexus-workbench`` or ``~/.config/nexus-workbench``, Windows
+    ``%LOCALAPPDATA%\\nexus-workbench``)."""
+    override = os.environ.get(ENV_CONFIG_DIR, "").strip()
+    if override:
+        return Path(override).expanduser()
     return Path(platformdirs.user_config_dir(APP_NAME, appauthor=False))
 
 

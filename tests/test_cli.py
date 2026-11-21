@@ -129,6 +129,67 @@ def test_login_empty_stdin(api: FakeAPI, monkeypatch: pytest.MonkeyPatch, capsys
     assert "No token was given" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("error", [EOFError, KeyboardInterrupt])
+def test_login_hidden_prompt_cancel_is_one_line(
+    api: FakeAPI, monkeypatch: pytest.MonkeyPatch, capsys, error: type[BaseException]
+) -> None:
+    monkeypatch.setattr("sys.stdin", FakeStdin("", tty=True))
+
+    def cancel(text: str) -> str:
+        raise error
+
+    monkeypatch.setattr("getpass.getpass", cancel)
+    assert cli.main(["login", "--token"]) == 1
+    err = capsys.readouterr().err
+    assert "Sign-in was cancelled." in err
+    assert "Traceback" not in err and "EOFError" not in err
+    assert auth.load_token(API_BASE).token is None
+
+
+def test_browser_login_ctrl_d_at_code_prompt(
+    api: FakeAPI, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    no_browser(monkeypatch)
+
+    def eof(text: str) -> str:
+        raise EOFError
+
+    monkeypatch.setattr("builtins.input", eof)
+    assert cli.main(["login"]) == 1
+    assert "Sign-in was cancelled." in capsys.readouterr().err
+
+
+def test_setup_login_cancel_is_reported_as_skipped(
+    api: FakeAPI, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from nexus_workbench import setup_cmd
+
+    monkeypatch.setattr("sys.stdin", FakeStdin("", tty=True))
+
+    def cancel(text: str) -> str:
+        raise EOFError
+
+    monkeypatch.setattr("getpass.getpass", cancel)
+    with cli._client() as client:
+        status = cli.do_login(
+            client, token_prompt=True, use_keyring=False, cancelled=setup_cmd.LOGIN_SKIPPED
+        )
+    assert status == setup_cmd.LOGIN_SKIPPED
+
+
+def test_setup_login_real_failure_is_still_a_failure(
+    api: FakeAPI, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from nexus_workbench import setup_cmd
+
+    monkeypatch.setattr("sys.stdin", FakeStdin("nxs_pat_not-a-real-token\n"))
+    with cli._client() as client:
+        status = cli.do_login(
+            client, token_prompt=True, use_keyring=False, cancelled=setup_cmd.LOGIN_SKIPPED
+        )
+    assert status == cli.FAILURE
+
+
 # -- browser flow (contract section 5) ---------------------------------------------
 
 
@@ -532,6 +593,40 @@ def test_doctor_reports_failure(api: FakeAPI, monkeypatch: pytest.MonkeyPatch, c
     assert cli.main(["doctor"]) == 1
     out = capsys.readouterr().out
     assert "Token: none" in out
+
+
+def test_doctor_flushes_stdout_before_the_failure_summary(
+    api: FakeAPI, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Piped, stdout is buffered: the stderr summary must still come after the report."""
+    order: list[str] = []
+
+    class Buffered(io.StringIO):
+        def __init__(self) -> None:
+            super().__init__()
+            self.pending: list[str] = []
+
+        def write(self, text: str) -> int:
+            self.pending.append(text)
+            return len(text)
+
+        def flush(self) -> None:
+            order.extend(t for t in self.pending if t.strip())
+            self.pending.clear()
+
+    class Unbuffered(io.StringIO):
+        def write(self, text: str) -> int:
+            if text.strip():
+                order.append(text)
+            return len(text)
+
+    monkeypatch.setenv("PATH", "/nonexistent")
+    monkeypatch.setattr("sys.stdout", Buffered())
+    monkeypatch.setattr("sys.stderr", Unbuffered())
+    assert cli.main(["doctor"]) == 1
+    assert order, "nothing was written"
+    assert "Some checks failed" in order[-1]
+    assert any("Token: none" in line for line in order[:-1])
 
 
 def test_doctor_env_token_precise_failure(

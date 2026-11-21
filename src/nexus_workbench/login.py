@@ -42,6 +42,14 @@ class LoginFailed(Exception):
     """Sign-in did not complete. The message says what to do next."""
 
 
+class LoginCancelled(LoginFailed):
+    """No token was given: the person cancelled (Ctrl-C, Ctrl-D, an empty answer) or there
+    was no input. ``setup`` treats this as a skipped step, not a failure."""
+
+
+CANCELLED_MESSAGE = "Sign-in was cancelled. Run `nexus-workbench login` to start again."
+
+
 def normalize_code(raw: str) -> str:
     """Uppercase and drop spaces and hyphens (contract 5.3)."""
     return "".join(ch for ch in raw.upper() if ch not in " -\t")
@@ -142,13 +150,17 @@ def read_token(io: LoginIO) -> str:
         interactive = io.stdin.isatty()
     except (AttributeError, ValueError):
         interactive = False
-    if interactive:
-        raw = io.hidden_prompt("Paste your Workbench token (it will not be shown): ")
-    else:
-        raw = io.stdin.read()
-    token = raw.strip()
+    try:
+        if interactive:
+            raw = io.hidden_prompt("Paste your Workbench token (it will not be shown): ")
+        else:
+            raw = io.stdin.read()
+    except (EOFError, KeyboardInterrupt):
+        io.say()
+        raise LoginCancelled(CANCELLED_MESSAGE) from None
+    token = (raw or "").strip()
     if not token:
-        raise LoginFailed(
+        raise LoginCancelled(
             "No token was given. "
             + CONNECT_PAGE_HINT
             + " Then run `nexus-workbench login --token`."
@@ -222,12 +234,11 @@ def login_with_browser(client: WorkbenchClient, io: LoginIO, *, use_keyring: boo
         try:
             raw = io.prompt("Code: ")
         except (EOFError, KeyboardInterrupt):
-            raise LoginFailed(
-                "Sign-in was cancelled. Run `nexus-workbench login` to start again."
-            ) from None
+            io.say()
+            raise LoginCancelled(CANCELLED_MESSAGE) from None
         code = normalize_code(raw)
         if not code:
-            raise LoginFailed("Sign-in was cancelled. Run `nexus-workbench login` to start again.")
+            raise LoginCancelled(CANCELLED_MESSAGE)
         problem = code_problem(code)
         if problem:
             local_retries += 1

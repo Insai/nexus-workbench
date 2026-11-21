@@ -24,12 +24,14 @@ from .client import (
     resolve_api_base,
 )
 from .client import safe_text as _safe
-from .login import LoginFailed, LoginIO, describe_result, run_login
+from .login import LoginCancelled, LoginFailed, LoginIO, describe_result, run_login
 
 OK, FAILURE, USAGE = 0, 1, 2
 
 
 def _err(text: str) -> None:
+    # stdout may be buffered (a pipe): flush it first so messages stay in order.
+    sys.stdout.flush()
     print(text, file=sys.stderr)
 
 
@@ -42,10 +44,20 @@ def _client() -> WorkbenchClient:
 # ---------------------------------------------------------------------------
 
 
-def do_login(client: WorkbenchClient, *, token_prompt: bool, use_keyring: bool) -> int:
+def do_login(
+    client: WorkbenchClient,
+    *,
+    token_prompt: bool,
+    use_keyring: bool,
+    cancelled: int = FAILURE,
+) -> int:
+    """Sign in. ``cancelled`` is returned when no token was given (setup skips the step)."""
     io = LoginIO()
     try:
         result = run_login(client, io, token_prompt=token_prompt, use_keyring=use_keyring)
+    except LoginCancelled as exc:
+        _err(str(exc))
+        return cancelled
     except LoginFailed as exc:
         _err(str(exc))
         return FAILURE
@@ -349,7 +361,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                 f"{label}: {exe}; MCP server `nexus` not registered. Run `nexus-workbench setup`."
             )
     if not ok:
-        _err("Some checks failed. See above.")
+        _err("Some checks failed. See above.")  # after the report, even when piped
     return OK if ok else FAILURE
 
 
@@ -366,7 +378,12 @@ def cmd_setup(args: argparse.Namespace) -> int:
     )
 
     def login(client: WorkbenchClient) -> int:
-        return do_login(client, token_prompt=False, use_keyring=auth.keyring_requested())
+        return do_login(
+            client,
+            token_prompt=False,
+            use_keyring=auth.keyring_requested(),
+            cancelled=setup_cmd.LOGIN_SKIPPED,
+        )
 
     return setup_cmd.run_setup(options, login=login)
 

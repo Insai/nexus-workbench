@@ -304,7 +304,7 @@ def test_ephemeral_run_installs_with_uv(env: Env) -> None:
     prefix = env.uv_cache / "archive-v0" / "abc123"
     code, out, err = run(agent="claude", prefix=str(prefix))
     assert code == 0, err
-    assert ["uv", "tool", "install", "--upgrade", "nexus-workbench"] in env.calls()
+    assert ["uv", "tool", "install", "--upgrade", setup_cmd.install_spec()] in env.calls()
     assert ["uv", "tool", "dir", "--bin"] in env.calls()
     exe = str(env.uv_bin / "nexus-workbench")
     assert env.claude_config()["mcpServers"]["nexus"]["command"] == exe
@@ -322,12 +322,121 @@ def test_ephemeral_dry_run_does_not_install(env: Env) -> None:
     assert not env.uv_bin.exists()
 
 
-def test_ephemeral_install_failure_is_explained(env: Env) -> None:
+def test_ephemeral_install_failure_is_explained(env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(setup_cmd, "running_version", lambda: "1.2.3")
     env.add("uv", "import sys\nprint('boom', file=sys.stderr)\nsys.exit(1)\n")
     env.add("claude", FAKE_CLAUDE)
     code, _, err = run(prefix=str(env.root / "c" / "archive-v0" / "x"))
     assert code == 1
-    assert "uv tool install nexus-workbench" in err
+    assert "uv tool install nexus-workbench==1.2.3" in err
+    assert "boom" in err
+    assert "development build" not in err
+
+
+def test_install_pins_the_running_version(env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(setup_cmd, "running_version", lambda: "1.2.3")
+    env.add("uv", FAKE_UV)
+    env.add("claude", FAKE_CLAUDE)
+    code, _, err = run(agent="claude", prefix=str(env.uv_cache / "archive-v0" / "p"))
+    assert code == 0, err
+    installs = [c for c in env.calls() if c[1:3] == ["tool", "install"]]
+    assert installs == [["uv", "tool", "install", "--upgrade", "nexus-workbench==1.2.3"]]
+
+
+def test_running_version_comes_from_package_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(setup_cmd.metadata, "version", lambda name: "9.8.7")
+    assert setup_cmd.running_version() == "9.8.7"
+    assert setup_cmd.install_spec() == "nexus-workbench==9.8.7"
+
+    def missing(name: str) -> str:
+        raise setup_cmd.metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(setup_cmd.metadata, "version", missing)
+    assert setup_cmd.running_version() == __version__
+
+
+@pytest.mark.parametrize(
+    ("version", "local"),
+    [("0.1.0.dev0", True), ("1.0.0+abc", True), ("1.0.0", False), ("1.0.0rc1", False)],
+)
+def test_is_local_build(version: str, local: bool) -> None:
+    assert setup_cmd.is_local_build(version) is local
+
+
+UV_UNSATISFIABLE = r"""
+import sys
+err = sys.stderr
+print("Resolved 0 packages in 12ms", file=err)
+print("  × No solution found when resolving dependencies:", file=err)
+print("  ╰─▶ Because nexus-workbench was not found in the package registry and you", file=err)
+print("      require nexus-workbench==0.1.0.dev0, we can conclude that your", file=err)
+print("      requirements are unsatisfiable.", file=err)
+sys.exit(1)
+"""
+
+
+def test_dev_build_install_failure_says_to_use_the_wheel(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(setup_cmd, "running_version", lambda: "0.1.0.dev0")
+    env.add("uv", UV_UNSATISFIABLE)
+    env.add("claude", FAKE_CLAUDE)
+    code, _, err = run(prefix=str(env.root / "c" / "archive-v0" / "x"))
+    assert code == 1
+    assert "development build (0.1.0.dev0)" in err
+    assert "uv tool install <path-to-wheel>" in err
+    assert "nexus-workbench setup" in err
+    assert "UV_FIND_LINKS" in err
+    # The whole uv message, not only its last line.
+    assert "No solution found" in err
+    assert "we can conclude that your requirements are unsatisfiable." in err
+
+
+# -- failure text ----------------------------------------------------------------------
+
+
+def _done(stderr: str = "", stdout: str = "", code: int = 1) -> Any:
+    import subprocess
+
+    return subprocess.CompletedProcess(["x"], code, stdout=stdout, stderr=stderr)
+
+
+def test_failure_text_keeps_the_error_lines() -> None:
+    text = setup_cmd._failure_text(
+        _done("noise 1\nnoise 2\nerror: thing went wrong\n  because of this\nand that.\n")
+    )
+    assert text == "exit code 1: error: thing went wrong because of this and that."
+
+
+def test_failure_text_without_markers_keeps_the_last_lines() -> None:
+    lines = "\n".join(f"line {i}" for i in range(10))
+    text = setup_cmd._failure_text(_done(lines))
+    assert text == "exit code 1: line 5 line 6 line 7 line 8 line 9"
+
+
+def test_failure_text_is_capped_and_one_line() -> None:
+    text = setup_cmd._failure_text(_done("error: " + "x" * 5000 + "\n\x1b[31mred\n"))
+    assert len(text) <= setup_cmd.FAILURE_TEXT_LIMIT + len("exit code 1: ")
+    assert text.endswith("…")
+    assert "\n" not in text and "\x1b" not in text
+
+
+def test_failure_text_shows_home_as_tilde(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    home = tmp_path / "someone"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    text = setup_cmd._failure_text(_done(f"error: no file {home}/dist/x.whl\nnot {home}else/y\n"))
+    assert str(home) + "/" not in text
+    assert "~/dist/x.whl" in text
+    assert f"{home}else/y" in text  # a different folder that only starts the same
+
+
+def test_failure_text_falls_back_to_stdout_and_says_when_not_started() -> None:
+    assert setup_cmd._failure_text(_done(stdout="error: on stdout")) == (
+        "exit code 1: error: on stdout"
+    )
+    assert setup_cmd._failure_text(_done()) == "exit code 1"
+    assert setup_cmd._failure_text(None) == "it could not be started"
 
 
 def test_uses_uv_from_env_var(env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -339,7 +448,7 @@ def test_uses_uv_from_env_var(env: Env, monkeypatch: pytest.MonkeyPatch) -> None
     env.add("claude", FAKE_CLAUDE)
     code, _, err = run(agent="claude", prefix=str(env.uv_cache / "archive-v0" / "z"))
     assert code == 0, err
-    assert ["uv", "tool", "install", "--upgrade", "nexus-workbench"] in env.calls()
+    assert ["uv", "tool", "install", "--upgrade", setup_cmd.install_spec()] in env.calls()
 
 
 def test_missing_agent_is_skipped(env: Env) -> None:
@@ -437,6 +546,109 @@ def test_login_failure_makes_setup_fail(env: Env) -> None:
     code, out, _ = run(agent="claude", no_login=False, login=lambda client: 1)
     assert code == 1
     assert "did not finish" in out
+
+
+def test_no_token_is_a_skipped_step_not_a_failure(env: Env) -> None:
+    env.add("claude", FAKE_CLAUDE)
+    code, out, err = run(
+        agent="claude", no_login=False, login=lambda client: setup_cmd.LOGIN_SKIPPED
+    )
+    assert code == 0, err
+    assert "did not finish" not in out
+    assert "skipped: no token was given" in out
+    assert "Next: run `nexus-workbench login`" in out
+
+
+def test_noninteractive_setup_without_token_exits_0(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The real login callback, no terminal and nothing on stdin: install and register
+    succeed, sign-in is skipped, and setup exits 0."""
+    from nexus_workbench import cli
+    from nexus_workbench.client import LoginNotAvailable
+
+    env.add("claude", FAKE_CLAUDE)
+
+    def unavailable(self: Any, **kwargs: Any) -> Any:
+        raise LoginNotAvailable("not yet")
+
+    monkeypatch.setattr(setup_cmd.WorkbenchClient, "cli_login_start", unavailable)
+    monkeypatch.setattr("sys.stdin", io.StringIO(""))
+    assert cli.main(["setup", "--agent", "claude"]) == 0
+
+
+def test_errors_come_after_buffered_output(env: Env) -> None:
+    """Piped, stdout is buffered: an error must not jump ahead of the steps before it."""
+    order: list[str] = []
+
+    class Buffered(io.StringIO):
+        pending = ""
+
+        def write(self, text: str) -> int:
+            self.pending += text
+            return len(text)
+
+        def flush(self) -> None:
+            order.extend(line for line in self.pending.splitlines() if line.strip())
+            self.pending = ""
+
+    class Unbuffered(io.StringIO):
+        def write(self, text: str) -> int:
+            order.extend(line for line in text.splitlines() if line.strip())
+            return len(text)
+
+    code = setup_cmd.run_setup(
+        setup_cmd.SetupOptions(agent="claude", no_login=True, yes=True),
+        login=lambda client: pytest.fail("login should not run"),
+        out=Buffered(),
+        err=Unbuffered(),
+        prefix=sys.prefix,
+    )
+    assert code == 1
+    assert order.index("1. Install") < order.index("2. Register the MCP server")
+    assert "was not found on this computer" in order[-1]
+
+
+def test_noninteractive_confirm_says_it_went_ahead() -> None:
+    out = io.StringIO()
+    assert setup_cmd._confirm(out, io.StringIO("")) is True
+    assert "without asking" in out.getvalue()
+
+
+class _TTY(io.StringIO):
+    def isatty(self) -> bool:
+        return True
+
+
+@pytest.mark.parametrize("error", [EOFError, KeyboardInterrupt])
+def test_confirm_cancel_changes_nothing(
+    env: Env, monkeypatch: pytest.MonkeyPatch, error: type[BaseException]
+) -> None:
+    env.add("claude", FAKE_CLAUDE)
+
+    def cancel(text: str) -> str:
+        raise error
+
+    monkeypatch.setattr("builtins.input", cancel)
+    out, err = io.StringIO(), io.StringIO()
+    code = setup_cmd.run_setup(
+        setup_cmd.SetupOptions(agent="claude", no_login=True),
+        login=lambda client: pytest.fail("login should not run"),
+        out=out,
+        err=err,
+        stdin=_TTY(),
+    )
+    assert code == 1
+    assert "Setup cancelled. Nothing was changed." in err.getvalue()
+    assert env.changing_calls() == []
+
+
+def test_config_dir_override_reaches_the_server(env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    env.add("claude", FAKE_CLAUDE)
+    monkeypatch.setenv("NEXUS_WORKBENCH_CONFIG_DIR", "/somewhere/creds")
+    assert run(agent="claude")[0] == 0
+    entry = env.claude_config()["mcpServers"]["nexus"]
+    assert entry["env"] == {"NEXUS_WORKBENCH_CONFIG_DIR": "/somewhere/creds"}
 
 
 def test_login_skipped_when_signed_in(env: Env) -> None:

@@ -29,6 +29,7 @@ def isolated(request: pytest.FixtureRequest) -> Iterator[Path | None]:
         "NEXUS_API_URL",
         "NEXUS_KEYRING",
         "NEXUS_ALLOW_INSECURE_LOCAL",
+        "NEXUS_WORKBENCH_CONFIG_DIR",
         "UV",
         "UV_CACHE_DIR",
     ):

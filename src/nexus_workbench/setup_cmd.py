@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -16,11 +17,18 @@ import sys
 import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from importlib import metadata
 from pathlib import Path
 from typing import Any, TextIO
 
 from . import __version__, auth
-from .client import ENV_ALLOW_INSECURE_LOCAL, ENV_API_URL, WorkbenchClient, WorkbenchError
+from .client import (
+    ENV_ALLOW_INSECURE_LOCAL,
+    ENV_API_URL,
+    WorkbenchClient,
+    WorkbenchError,
+    safe_text,
+)
 
 PACKAGE = "nexus-workbench"
 SERVER_NAME = "nexus"
@@ -29,6 +37,13 @@ AGENTS = ("claude", "codex")
 AGENT_LABELS = {"claude": "Claude Code", "codex": "Codex"}
 EXE_SUFFIX = ".exe" if os.name == "nt" else ""
 COMMAND_TIMEOUT = 300
+#: The login callback returns this when no token was given (cancelled, or no input).
+#: That is a skipped step, not a failure.
+LOGIN_SKIPPED = 3
+FAILURE_LINES = 5
+FAILURE_TEXT_LIMIT = 600
+_FAILURE_MARKERS = ("error", "not found", "×", "unsatisfiable", "no solution")
+_LINE_DECORATION = " \t×│╰├─▶┬┴"
 
 
 class SetupError(Exception):
@@ -75,12 +90,46 @@ def _uv_executable() -> str | None:
     return shutil.which("uv")
 
 
+def home_as_tilde(text: str) -> str:
+    """``text`` with the home folder written as ``~``, so messages do not name the user."""
+    homes: set[str] = set()
+    try:
+        home = Path.home()
+    except (RuntimeError, OSError):
+        return text
+    for candidate in (str(home), os.path.realpath(home)):
+        if candidate and candidate not in ("/", "\\"):
+            homes.add(candidate.rstrip("/\\"))
+    for candidate in sorted(homes, key=len, reverse=True):
+        text = re.sub(re.escape(candidate) + r"(?![\w.-])", "~", text)
+    return text
+
+
 def _failure_text(result: subprocess.CompletedProcess[str] | None) -> str:
+    """Exit code plus the lines of the tool's output that say what went wrong, on one line.
+
+    Tools such as uv wrap one message over several lines and end with a fragment like
+    "unsatisfiable.", so the last line alone says nothing. This keeps the lines from the
+    first one that looks like an error (or the last few), joins them, and caps the length.
+    """
     if result is None:
         return "it could not be started"
-    text = (result.stderr or result.stdout or "").strip().splitlines()
-    last = text[-1] if text else ""
-    return f"exit code {result.returncode}" + (f": {last}" if last else "")
+    output = result.stderr.strip() if result.stderr and result.stderr.strip() else result.stdout
+    lines = [line.strip(_LINE_DECORATION) for line in (output or "").splitlines()]
+    lines = [line for line in lines if line]
+    start = next(
+        (
+            i
+            for i, line in enumerate(lines)
+            if any(marker in line.lower() for marker in _FAILURE_MARKERS)
+        ),
+        max(0, len(lines) - FAILURE_LINES),
+    )
+    detail = " ".join(" ".join(lines[start : start + FAILURE_LINES]).split())
+    detail = safe_text(home_as_tilde(detail), limit=None)
+    if len(detail) > FAILURE_TEXT_LIMIT:
+        detail = detail[: FAILURE_TEXT_LIMIT - 1].rstrip() + "…"
+    return f"exit code {result.returncode}" + (f": {detail}" if detail else "")
 
 
 # ---------------------------------------------------------------------------
@@ -140,6 +189,24 @@ class ServerCommand:
     note: str
 
 
+def running_version() -> str:
+    """The version of the copy that is running, from the installed package's metadata."""
+    try:
+        return metadata.version(PACKAGE)
+    except metadata.PackageNotFoundError:
+        return __version__
+
+
+def is_local_build(version: str) -> bool:
+    """True for a development or local build (``.dev``, ``+local``) that no index publishes."""
+    return ".dev" in version or "+" in version
+
+
+def install_spec(version: str | None = None) -> str:
+    """The requirement uv installs: this exact version, so setup installs what is running."""
+    return f"{PACKAGE}=={version or running_version()}"
+
+
 def ensure_persistent_install(runner: Runner, *, prefix: str | None = None) -> ServerCommand:
     uv = _uv_executable()
     cache = uv_cache_dir(runner, uv)
@@ -160,11 +227,21 @@ def ensure_persistent_install(runner: Runner, *, prefix: str | None = None) -> S
             f"Install uv, then run: uv tool install {PACKAGE}"
         )
 
-    result = runner.change([uv, "tool", "install", "--upgrade", PACKAGE])
+    version = running_version()
+    spec = install_spec(version)
+    result = runner.change([uv, "tool", "install", "--upgrade", spec])
     if result is not None and result.returncode != 0:
+        if is_local_build(version):
+            raise SetupError(
+                f"Installing {spec} with uv failed ({_failure_text(result)}). "
+                f"This is a development build ({version}), and package indexes do not have "
+                "development builds. Install it from the wheel file instead: "
+                "`uv tool install <path-to-wheel>`, then run `nexus-workbench setup`. "
+                "Or point uv at the folder holding the wheel with UV_FIND_LINKS=<folder>."
+            )
         raise SetupError(
-            f"Installing {PACKAGE} with uv failed ({_failure_text(result)}). "
-            f"Run `uv tool install {PACKAGE}` yourself to see why, then run setup again."
+            f"Installing {spec} with uv failed ({_failure_text(result)}). "
+            f"Run `uv tool install {spec}` yourself to see why, then run setup again."
         )
     bin_result = runner.query([uv, "tool", "dir", "--bin"])
     if bin_result is None or bin_result.returncode != 0 or not bin_result.stdout.strip():
@@ -188,7 +265,7 @@ def ensure_persistent_install(runner: Runner, *, prefix: str | None = None) -> S
 def server_env() -> dict[str, str]:
     """Settings the server needs that the agent would not pass on. Never the token."""
     env: dict[str, str] = {}
-    for key in (ENV_API_URL, ENV_ALLOW_INSECURE_LOCAL):
+    for key in (ENV_API_URL, ENV_ALLOW_INSECURE_LOCAL, auth.ENV_CONFIG_DIR):
         value = os.environ.get(key)
         if value:
             env[key] = value
@@ -412,6 +489,10 @@ def _confirm(out: TextIO, stdin: TextIO) -> bool:
     except (AttributeError, ValueError):
         interactive = False
     if not interactive:
+        print(
+            "No terminal to ask on, so setup goes ahead without asking (as with --yes).",
+            file=out,
+        )
         return True
     print(
         "This adds the Workbench MCP server and skills to your coding agents"
@@ -420,9 +501,25 @@ def _confirm(out: TextIO, stdin: TextIO) -> bool:
     )
     try:
         answer = input("Continue? [Y/n] ").strip().lower()
-    except EOFError:
+    except (EOFError, KeyboardInterrupt):
+        print(file=out)
         return False
     return answer in ("", "y", "yes")
+
+
+@dataclass
+class _AfterOut:
+    """Writes to ``err`` only after flushing ``out``, so a piped run keeps its order."""
+
+    out: TextIO
+    err: TextIO
+
+    def write(self, text: str) -> int:
+        self.out.flush()
+        return self.err.write(text)
+
+    def flush(self) -> None:
+        self.err.flush()
 
 
 def run_setup(
@@ -435,7 +532,7 @@ def run_setup(
     prefix: str | None = None,
 ) -> int:
     out = out or sys.stdout
-    err = err or sys.stderr
+    err = _AfterOut(out, err or sys.stderr)
     stdin = stdin or sys.stdin
     runner = Runner(dry_run=options.dry_run, out=out)
     selected = list(AGENTS) if options.agent == "all" else [options.agent]
@@ -542,7 +639,12 @@ def run_setup(
         elif options.dry_run:
             runner.say("  would run: nexus-workbench login")
         else:
-            if login(client) != 0:
+            out.flush()  # the login flow writes to the real stderr
+            status = login(client)
+            if status == LOGIN_SKIPPED:
+                runner.say("  skipped: no token was given")
+                summary.append("Not signed in (no token was given)")
+            elif status != 0:
                 failed = True
             else:
                 signed_in = True

@@ -5,6 +5,7 @@ import os
 import stat
 import sys
 import zlib
+from pathlib import Path
 
 import pytest
 
@@ -13,6 +14,8 @@ from tests.fake_api import make_token
 
 API = "https://api.test.invalid"
 OTHER = "https://staging.test.invalid"
+# Taken at import, before the autouse fixture in conftest replaces it.
+REAL_CONFIG_DIR = auth.config_dir
 posix_only = pytest.mark.skipif(os.name != "posix", reason="POSIX permissions")
 
 
@@ -273,3 +276,16 @@ def test_keyring_requested(monkeypatch: pytest.MonkeyPatch) -> None:
     assert auth.keyring_requested() is False
     monkeypatch.setenv("NEXUS_KEYRING", "1")
     assert auth.keyring_requested() is True
+
+
+def test_config_dir_env_override(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # conftest replaces auth.config_dir for isolation; this is the real one.
+    target = tmp_path / "creds-here"
+    monkeypatch.setenv("NEXUS_WORKBENCH_CONFIG_DIR", str(target))
+    assert REAL_CONFIG_DIR() == target
+    monkeypatch.setenv("NEXUS_WORKBENCH_CONFIG_DIR", "~/elsewhere")
+    assert REAL_CONFIG_DIR() == Path("~/elsewhere").expanduser()
+    monkeypatch.setenv("NEXUS_WORKBENCH_CONFIG_DIR", "  ")
+    assert REAL_CONFIG_DIR().name == "nexus-workbench"
+    monkeypatch.delenv("NEXUS_WORKBENCH_CONFIG_DIR")
+    assert REAL_CONFIG_DIR().name == "nexus-workbench"
