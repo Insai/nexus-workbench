@@ -254,7 +254,7 @@ def test_browser_login_out_of_attempts(
     monkeypatch.setattr("builtins.input", prompt)
     assert cli.main(["login"]) == 1
     err = capsys.readouterr().err
-    assert "No attempts are left" in err
+    assert err.count("No attempts are left") == 1
     assert auth.load_token(API_BASE).token is None
 
 

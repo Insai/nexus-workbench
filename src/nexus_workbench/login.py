@@ -254,11 +254,13 @@ def login_with_browser(client: WorkbenchClient, io: LoginIO, *, use_keyring: boo
             )
         except CodeWrong as exc:
             pending_replies = 0
-            print(str(exc), file=io.err)
             if exc.attempts_left is not None and exc.attempts_left <= 0:
+                # The CLI's own sentence ends the sign-in; the server's would repeat it.
                 raise LoginFailed(
-                    "No attempts are left. Run `nexus-workbench login` to start again."
+                    "That code is not right. No attempts are left. "
+                    "Run `nexus-workbench login` to start again."
                 ) from None
+            print(str(exc), file=io.err)
             continue
         except InvalidArgument:
             # Contract 5.1: a code sent before the person approves is refused this way and
