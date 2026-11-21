@@ -137,7 +137,8 @@ Every command has `--help`.
 
 Exit codes: 0 ok, 1 failure, 2 usage error.
 
-Error messages carry a stable code in brackets, for example:
+Error messages carry a stable code in brackets, right after the first sentence, for
+example:
 
 ```text
 Not signed in (not_signed_in). Run `nexus-workbench login` in a terminal, then try again.

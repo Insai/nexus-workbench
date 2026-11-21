@@ -207,8 +207,9 @@ Returns one recording row plus, each only when known and allowed:
 
 ### 3.3 Codes the client adds
 
-The command line puts the code in brackets in its error messages, like
-`Not signed in (not_signed_in)`. With `--json` it prints the error to stderr
+Every command-line error message carries its code in brackets, right after
+the first sentence and before the advice, like
+`Not signed in (not_signed_in). Run ...`. With `--json` it prints the error to stderr
 as `{"error": {"code": "<code>", "message": "<text>"}}` and exits non-zero.
 The MCP tools return a message for a person, without the code.
 The codes are the server codes in section 3.1 and 5.1, plus these, which the
@@ -222,7 +223,9 @@ client sets itself and the server never sends:
 | `unexpected_response` | A reply this version does not understand, or a redirect. |
 | `login_not_available` | The sign-in endpoint answered 404 (section 5). |
 | `usage` | A command-line argument is out of range. Exit code 2. |
-| `local_file` | A local tool refused the file (missing, not an EDF, too short, EDF+D). |
+| `login_failed` | Sign-in did not complete: the server refused it, the code was wrong too often, or the token could not be saved. |
+| `login_cancelled` | Sign-in was cancelled, or no token was given. |
+| `local_file` | A local file could not be used: a local tool refused it (missing, not an EDF, too short, EDF+D), the sample files already exist or could not be written, or the credentials file could not be changed. |
 | `local_unexpected` | An unexpected error while reading a local file. `NEXUS_DEBUG=1` prints the traceback. |
 
 HTTP 404 with no JSON `error` body maps to `early_access_required`.

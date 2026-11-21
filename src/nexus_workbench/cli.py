@@ -41,6 +41,8 @@ DEBUG_HINT = f"Rerun with {ENV_DEBUG}=1 to see the details."
 USAGE_CODE = "usage"
 LOCAL_FILE_CODE = "local_file"
 LOCAL_UNEXPECTED_CODE = "local_unexpected"
+LOGIN_FAILED_CODE = "login_failed"
+LOGIN_CANCELLED_CODE = "login_cancelled"
 
 
 def _err(text: str) -> None:
@@ -50,11 +52,18 @@ def _err(text: str) -> None:
 
 
 def with_code(code: str, message: str, hint: str = "") -> str:
-    """``message`` with its code in brackets, then the hint: "Not signed in (not_signed_in). …"."""
-    head = message.strip()
+    """The first sentence of ``message`` with its code in brackets, then the rest and the hint.
+
+    "Not signed in (not_signed_in). Run `nexus-workbench login`, then try again."
+    """
+    text = f"{message.strip()} {hint.strip()}".strip()
+    head, sep, rest = text.partition(". ")
+    if not sep:
+        head, rest = text, ""
+    head = head.rstrip()
     if head.endswith("."):
         head = head[:-1]
-    return f"{head} ({code}). {hint}".strip()
+    return f"{head} ({code}). {rest}".strip()
 
 
 def _fail(code: str, message: str, hint: str = "", *, as_json: bool = False) -> None:
@@ -95,13 +104,10 @@ def do_login(
     try:
         result = run_login(client, io, token_prompt=token_prompt, use_keyring=use_keyring)
     except LoginCancelled as exc:
-        _err(str(exc))
+        _fail(LOGIN_CANCELLED_CODE, str(exc))
         return cancelled
-    except LoginFailed as exc:
-        _err(str(exc))
-        return FAILURE
-    except auth.CredentialsError as exc:
-        _err(str(exc))
+    except (LoginFailed, auth.CredentialsError) as exc:
+        _fail(LOGIN_FAILED_CODE, str(exc))
         return FAILURE
     except WorkbenchError as exc:
         _fail_workbench(exc)
@@ -123,7 +129,7 @@ def cmd_logout(args: argparse.Namespace) -> int:
     try:
         removed = auth.delete_token(api_base)
     except auth.CredentialsError as exc:
-        _err(str(exc))
+        _fail(LOCAL_FILE_CODE, str(exc))
         return FAILURE
     if removed:
         print("Signed out on this computer.")
@@ -211,7 +217,7 @@ def format_recordings_table(rows: list[dict[str, Any]]) -> str:
 
 def cmd_recordings(args: argparse.Namespace) -> int:
     if not 1 <= args.limit <= 100:
-        _fail(USAGE_CODE, f"--limit must be from 1 to 100 (got {args.limit}).", as_json=args.json)
+        _fail(USAGE_CODE, f"--limit must be from 1 to 100, got {args.limit}.", as_json=args.json)
         return USAGE
     with _client() as client:
         try:
@@ -245,17 +251,18 @@ def cmd_sample(args: argparse.Namespace) -> int:
     from .local.sample import FILE_NAMES, approx_edf_bytes, make_sample_night  # noqa: PLC0415
 
     if not 0.5 <= args.hours <= 24:
-        _err("--hours must be between 0.5 and 24.")
+        _fail(USAGE_CODE, f"--hours must be from 0.5 to 24, got {args.hours:g}.")
         return USAGE
     if args.seed < 0:
-        _err("--seed must be zero or more.")
+        _fail(USAGE_CODE, f"--seed must be zero or more, got {args.seed}.")
         return USAGE
     existing = [n for n in FILE_NAMES if os.path.lexists(os.path.join(args.out, n))]
     if existing and not args.force:
         more = f" and {len(existing) - 1} other sample file(s)" if len(existing) > 1 else ""
-        _err(
-            f"{existing[0]}{more} already exist in that folder. Run again with --force to "
-            "replace them, or pass another folder with --out."
+        _fail(
+            LOCAL_FILE_CODE,
+            f"{existing[0]}{more} already exist in that folder.",
+            "Run again with --force to replace them, or pass another folder with --out.",
         )
         return FAILURE
     size = approx_edf_bytes(args.hours) / 1e6
@@ -265,7 +272,11 @@ def cmd_sample(args: argparse.Namespace) -> int:
     try:
         night = make_sample_night(args.out, hours=args.hours, seed=args.seed)
     except OSError as exc:
-        _err(f"Could not write the sample files: {exc.strerror or type(exc).__name__}.")
+        _fail(
+            LOCAL_FILE_CODE,
+            f"Could not write the sample files: {exc.strerror or type(exc).__name__}.",
+            "Check that the folder exists and you can write to it, or pass another with --out.",
+        )
         return FAILURE
     print(f"Wrote a synthetic {args.hours:g} h night (seed {args.seed}) to {args.out}:")
     for key in ("edf", "hypnogram", "hypnogramScorer2", "eventsReference", "eventsCandidate"):

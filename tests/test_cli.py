@@ -109,7 +109,8 @@ def test_login_does_not_save_refused_token(
 ) -> None:
     monkeypatch.setattr("sys.stdin", FakeStdin(make_token()))  # valid shape, unknown to server
     assert cli.main(["login", "--token"]) == 1
-    assert "did not accept your token" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "did not accept your token" in err and "(login_failed)" in err
     assert auth.load_token(API_BASE).token is None
 
 
@@ -127,7 +128,7 @@ def test_login_saves_token_when_early_access_off(
 def test_login_empty_stdin(api: FakeAPI, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     monkeypatch.setattr("sys.stdin", FakeStdin(""))
     assert cli.main(["login", "--token"]) == 1
-    assert "No token was given" in capsys.readouterr().err
+    assert "No token was given (login_cancelled). " in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("error", [EOFError, KeyboardInterrupt])
@@ -142,7 +143,7 @@ def test_login_hidden_prompt_cancel_is_one_line(
     monkeypatch.setattr("getpass.getpass", cancel)
     assert cli.main(["login", "--token"]) == 1
     err = capsys.readouterr().err
-    assert "Sign-in was cancelled." in err
+    assert "Sign-in was cancelled (login_cancelled). Run" in err
     assert "Traceback" not in err and "EOFError" not in err
     assert auth.load_token(API_BASE).token is None
 
@@ -157,7 +158,7 @@ def test_browser_login_ctrl_d_at_code_prompt(
 
     monkeypatch.setattr("builtins.input", eof)
     assert cli.main(["login"]) == 1
-    assert "Sign-in was cancelled." in capsys.readouterr().err
+    assert "Sign-in was cancelled (login_cancelled). Run" in capsys.readouterr().err
 
 
 def test_setup_login_cancel_is_reported_as_skipped(
@@ -541,12 +542,46 @@ def test_server_error_codes_reach_the_cli(api: FakeAPI, capsys) -> None:
 def test_recordings_bad_limit_json(api: FakeAPI, capsys) -> None:
     assert cli.main(["recordings", "--limit", "500", "--json"]) == 2
     error = json.loads(capsys.readouterr().err)["error"]
-    assert error == {"code": "usage", "message": "--limit must be from 1 to 100 (got 500)."}
+    assert error == {"code": "usage", "message": "--limit must be from 1 to 100, got 500."}
 
 
 def test_with_code() -> None:
     assert cli.with_code("x", "It broke.", "Try again.") == "It broke (x). Try again."
     assert cli.with_code("x", "It broke") == "It broke (x)."
+    # The code follows the first sentence, before any advice in the message itself.
+    assert cli.with_code("x", "It broke. Try again.") == "It broke (x). Try again."
+    assert (
+        cli.with_code("x", "It broke. Try again.", "Or ask.") == "It broke (x). Try again. Or ask."
+    )
+    assert cli.with_code("x", "a.edf is empty.") == "a.edf is empty (x)."
+
+
+def test_recordings_bad_limit_line(api: FakeAPI, capsys) -> None:
+    assert cli.main(["recordings", "--limit", "0"]) == 2
+    assert capsys.readouterr().err == "--limit must be from 1 to 100, got 0 (usage).\n"
+
+
+def test_login_credentials_error_has_a_code(
+    api: FakeAPI, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    def broken(*args: Any, **kwargs: Any) -> None:
+        raise auth.CredentialsError("Your credentials file could not be read. Delete it.")
+
+    monkeypatch.setattr(auth, "save_token", broken)
+    monkeypatch.setattr("sys.stdin", FakeStdin(api.add_token()))
+    assert cli.main(["login", "--token"]) == 1
+    err = capsys.readouterr().err
+    assert "Your credentials file could not be read (login_failed). Delete it." in err
+
+
+def test_logout_credentials_error_has_a_code(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    def broken(*args: Any, **kwargs: Any) -> bool:
+        raise auth.CredentialsError("Your credentials file could not be read. Delete it.")
+
+    monkeypatch.setattr(auth, "delete_token", broken)
+    assert cli.main(["logout"]) == 1
+    err = capsys.readouterr().err
+    assert err == "Your credentials file could not be read (local_file). Delete it.\n"
 
 
 def test_logout(api: FakeAPI, capsys) -> None:
@@ -825,7 +860,26 @@ def test_every_command_has_a_description() -> None:
 
 def test_sample_bad_hours(tmp_path: Path, capsys) -> None:
     assert cli.main(["sample", "--out", str(tmp_path), "--hours", "0.1"]) == 2
-    assert "--hours" in capsys.readouterr().err
+    assert capsys.readouterr().err == "--hours must be from 0.5 to 24, got 0.1 (usage).\n"
+
+
+def test_sample_bad_seed(tmp_path: Path, capsys) -> None:
+    assert cli.main(["sample", "--out", str(tmp_path), "--seed", "-1"]) == 2
+    assert capsys.readouterr().err == "--seed must be zero or more, got -1 (usage).\n"
+
+
+def test_sample_write_failure_has_a_code(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    from nexus_workbench.local import sample  # noqa: PLC0415
+
+    def full(*args: Any, **kwargs: Any) -> None:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(sample, "make_sample_night", full)
+    assert cli.main(["sample", "--out", str(tmp_path), "--hours", "0.5"]) == 1
+    err = capsys.readouterr().err
+    assert "Could not write the sample files: No space left on device (local_file). " in err
 
 
 def test_qc_errors_are_plain(tmp_path: Path, capsys) -> None:
@@ -912,5 +966,6 @@ def test_sample_refuses_to_overwrite_without_force(tmp_path: Path, capsys) -> No
     assert cli.main(["sample", "--out", str(out_dir), "--hours", "0.5", "--seed", "1"]) == 1
     err = capsys.readouterr().err
     assert "--force" in err and "sample_night.edf" in err and str(tmp_path) not in err
+    assert "already exist in that folder (local_file). Run again with --force" in err
     assert (out_dir / "sample_night.edf").read_bytes() == before
     assert cli.main(["sample", "--out", str(out_dir), "--hours", "0.5", "--force"]) == 0
