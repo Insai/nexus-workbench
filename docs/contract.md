@@ -266,7 +266,7 @@ minute.
 
 `canSetAccess` is `true` only for callers who may use `set_access`.
 
-## 5. Terminal sign-in (version 1.1, may ship after launch)
+## 5. Terminal sign-in
 
 Until this exists, `nexus-workbench login` asks for a token made on the page.
 A client finds out with the first call: HTTP 404 from `workbench_cli_login`
