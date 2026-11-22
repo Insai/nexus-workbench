@@ -1,4 +1,4 @@
-"""HTTPS client for the Workbench agent API (contract sections 1, 3 and 5).
+"""HTTPS client for the Workbench agent API (contract sections 1, 3, 5 and 7).
 
 The token is sent only in the Authorization header and is never logged or put
 into an exception message.
@@ -17,6 +17,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from . import __version__, auth
+from . import scopes as sc
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,8 @@ ENV_API_URL = "NEXUS_API_URL"
 ENV_ALLOW_INSECURE_LOCAL = "NEXUS_ALLOW_INSECURE_LOCAL"
 
 MAX_BODY_BYTES = 2048
+#: ``propose_marks`` alone may send a larger body (contract 7.7).
+MAX_PROPOSE_BODY_BYTES = 262_144
 MAX_RETRY_AFTER_SECONDS = 10.0
 TIMEOUT = httpx.Timeout(connect=5.0, read=30.0, write=30.0, pool=5.0)
 USER_AGENT = f"nexus-workbench/{__version__}"
@@ -196,6 +199,69 @@ class UnexpectedResponse(WorkbenchError):
     default_hint = "Update with `uv tool upgrade nexus-workbench`, then try again."
 
 
+class ScopeRequired(WorkbenchError):
+    """The token lacks the scope an action needs (contract 7.1). ``scope`` names it."""
+
+    code = "scope_required"
+
+    def __init__(
+        self,
+        scope: str | None = None,
+        *args: Any,
+        have: tuple[str, ...] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        self.scope = scope if scope in sc.ALL else None
+        if "message" not in kwargs and not args:
+            kwargs["message"] = (
+                sc.CANNOT[self.scope] if self.scope else "This token lacks the scope this needs."
+            )
+        if "hint" not in kwargs:
+            wanted = [*(have or ()), self.scope] if self.scope else list(have or ())
+            kwargs["hint"] = (
+                f"Sign in again with `{sc.login_command(wanted)}`."
+                if self.scope
+                else "Sign in again with `nexus-workbench login --scope <scope>`."
+            )
+        super().__init__(*args, **kwargs)
+
+
+class WriteAccessRequired(WorkbenchError):
+    code = "write_access_required"
+    default_message = "This workspace does not take agent writes yet."
+    default_hint = (
+        f"Insai switches writes on per workspace; ask for it at {EARLY_ACCESS_URL}. "
+        "Reads still work."
+    )
+
+
+class AlreadyAnalysed(WorkbenchError):
+    code = "already_analysed"
+    default_message = "This recording already has machine output, so no analysis was started."
+    default_hint = "An agent cannot ask for a re-analysis."
+
+
+class MarkLimit(WorkbenchError):
+    code = "mark_limit"
+    default_message = (
+        "These marks would take this token past 5,000 marks on this recording, "
+        "withdrawn ones included."
+    )
+    default_hint = "Nothing was written. Propose fewer marks."
+
+
+class NotOnServer(InvalidArgument):
+    """A version 1.1 action sent to a version 1 server (contract section 7)."""
+
+    def __init__(self, action: str, **kwargs: Any) -> None:
+        self.action = action
+        super().__init__(
+            f"This Workbench server does not offer {safe_text(action, 40)} yet.",
+            hint="It is part of agent API version 1.1, which reaches staging first.",
+            **kwargs,
+        )
+
+
 ERRORS_BY_CODE: dict[str, type[WorkbenchError]] = {
     cls.code: cls
     for cls in (
@@ -210,7 +276,27 @@ ERRORS_BY_CODE: dict[str, type[WorkbenchError]] = {
         InternalError,
         LoginExpired,
         CodeWrong,
+        ScopeRequired,
+        WriteAccessRequired,
+        AlreadyAnalysed,
+        MarkLimit,
     )
+}
+
+#: A clearer sentence for ``forbidden`` on the actions where it has a second meaning.
+FORBIDDEN_BY_ACTION: dict[str, str] = {
+    "propose_marks": (
+        "Workbench refused to write marks on this recording: you are held blind on it, or this "
+        "token can no longer read the workspace."
+    ),
+    "withdraw_marks": (
+        "Workbench refused to withdraw marks on this recording: you are held blind on it, or "
+        "this token can no longer read the workspace."
+    ),
+    "request_analysis": (
+        "Workbench refused to start the analysis: only the person who uploaded the recording "
+        "can ask for one."
+    ),
 }
 
 
@@ -307,9 +393,17 @@ def display_name(value: Any) -> str:
 
 
 def error_from_response(
-    response: httpx.Response, *, login_endpoint: bool = False
+    response: httpx.Response,
+    *,
+    login_endpoint: bool = False,
+    action: str | None = None,
+    have: tuple[str, ...] | None = None,
 ) -> WorkbenchError:
-    """Map a non-200 response to a typed error (contract 3.1 and 5.1)."""
+    """Map a non-200 response to a typed error (contract 3.1, 5.1 and 7.3).
+
+    ``action`` is the agent API action that was sent and ``have`` the token's scopes when
+    known, so the messages can be specific.
+    """
     status = response.status_code
     body: Any = None
     try:
@@ -351,6 +445,8 @@ def error_from_response(
 
     if cls is InvalidArgument:
         detail = _one_line(error.get("message")) if isinstance(error, dict) else None
+        if action in sc.V11_ACTIONS and detail and "unknown action" in detail.lower():
+            return NotOnServer(action, status=status)
         return InvalidArgument(
             f"Workbench did not accept the request: {detail}" if detail else None, status=status
         )
@@ -364,6 +460,13 @@ def error_from_response(
         if not isinstance(attempts, int) or isinstance(attempts, bool):
             attempts = None
         return CodeWrong(status=status, attempts_left=attempts)
+    if cls is ScopeRequired:
+        scope = body.get("scope") if isinstance(body, dict) else None
+        if not isinstance(scope, str) and action is not None:
+            scope = sc.needed(action)
+        return ScopeRequired(scope if isinstance(scope, str) else None, have=have, status=status)
+    if cls is Forbidden and action in FORBIDDEN_BY_ACTION:
+        return Forbidden(FORBIDDEN_BY_ACTION[action], status=status)
     return cls(status=status)
 
 
@@ -375,11 +478,13 @@ class WorkbenchClient:
         *,
         api_base: str | None = None,
         token: str | None = None,
+        scopes: tuple[str, ...] | list[str] | None = None,
         transport: httpx.BaseTransport | None = None,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self.api_base = check_url(api_base.rstrip("/")) if api_base else resolve_api_base()
         self._token = token
+        self._scopes: tuple[str, ...] | None = sc.normalise(scopes) if scopes is not None else None
         self._sleep = sleep
         self._transport = transport
         self._http = httpx.Client(
@@ -404,6 +509,11 @@ class WorkbenchClient:
             api_base=self.api_base, token=token, transport=self._transport, sleep=self._sleep
         )
 
+    @property
+    def scopes(self) -> tuple[str, ...] | None:
+        """The token's scopes when this client knows them (saved with it), else None."""
+        return self._scopes
+
     def __repr__(self) -> str:  # never show the token
         return f"WorkbenchClient(api_base={self.api_base!r})"
 
@@ -419,6 +529,8 @@ class WorkbenchClient:
         if not stored.token:
             raise NotSignedIn()
         self._token = stored.token
+        if self._scopes is None and stored.scopes is not None:
+            self._scopes = stored.scopes
         return stored.token
 
     # -- transport -----------------------------------------------------------
@@ -432,7 +544,9 @@ class WorkbenchClient:
         login_endpoint: bool = False,
     ) -> dict[str, Any]:
         payload = json.dumps(body, separators=(",", ":")).encode("utf-8")
-        if len(payload) > MAX_BODY_BYTES:
+        action = body.get("action")
+        limit = MAX_PROPOSE_BODY_BYTES if action == "propose_marks" else MAX_BODY_BYTES
+        if len(payload) > limit:
             raise InvalidArgument(
                 "The request is too large for Workbench.",
                 hint="Use shorter arguments.",
@@ -441,7 +555,6 @@ class WorkbenchClient:
         if token:
             headers["Authorization"] = f"Bearer {token}"
         url = self.api_base + path
-        action = body.get("action")
 
         response: httpx.Response | None = None
         for attempt in (1, 2):
@@ -472,7 +585,12 @@ class WorkbenchClient:
 
         assert response is not None
         if response.status_code != 200:
-            raise error_from_response(response, login_endpoint=login_endpoint)
+            raise error_from_response(
+                response,
+                login_endpoint=login_endpoint,
+                action=None if login_endpoint else action,
+                have=self._scopes,
+            )
         try:
             data = response.json()
         except ValueError:
@@ -484,21 +602,108 @@ class WorkbenchClient:
     # -- agent API -----------------------------------------------------------
 
     def call(self, action: str, **args: Any) -> dict[str, Any]:
-        """Call one agent API action. Arguments use the contract's names (e.g. ``projectId``)."""
+        """Call one agent API action. Arguments use the contract's names (e.g. ``projectId``).
+
+        When the token's scopes are known and lack the one ``action`` needs, it raises
+        :class:`ScopeRequired` before any call (contract 7.10).
+        """
         token = self._resolve_token()
+        self.require_scope(action)
         body = {"action": action, **{k: v for k, v in args.items() if v is not None}}
         return self._post(AGENT_API_PATH, body, token=token)
+
+    def require_scope(self, action: str) -> None:
+        """Raise :class:`ScopeRequired` when the known scopes do not cover ``action``."""
+        need = sc.needed(action)
+        if self._scopes is not None and need not in self._scopes:
+            raise ScopeRequired(need, have=self._scopes)
+
+    # -- version 1.1 actions (contract section 7) ------------------------------
+
+    def list_members(self) -> dict[str, Any]:
+        return self.call("list_members")
+
+    def list_tasks(self, *, mine: bool = True) -> dict[str, Any]:
+        return self.call("list_tasks", mine=mine)
+
+    def list_nights(self, *, project_id: str | None = None) -> dict[str, Any]:
+        return self.call("list_nights", projectId=project_id)
+
+    def list_layers(self, *, project_id: str | None = None) -> dict[str, Any]:
+        return self.call("list_layers", projectId=project_id)
+
+    def get_events(
+        self,
+        recording_id: str,
+        *,
+        kind: str | None = None,
+        cursor: str | None = None,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        return self.call("get_events", id=recording_id, kind=kind, cursor=cursor, limit=limit)
+
+    def get_stages(self, recording_id: str, *, source: str = "machine") -> dict[str, Any]:
+        return self.call("get_stages", id=recording_id, source=source)
+
+    def get_quality(self, recording_id: str) -> dict[str, Any]:
+        return self.call("get_quality", id=recording_id)
+
+    def list_marks(
+        self,
+        recording_id: str,
+        *,
+        origin: str | None = None,
+        cursor: str | None = None,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        return self.call("list_marks", id=recording_id, origin=origin, cursor=cursor, limit=limit)
+
+    def propose_marks(
+        self, recording_id: str, marks: list[dict[str, Any]], *, op_id: str | None = None
+    ) -> dict[str, Any]:
+        return self.call("propose_marks", id=recording_id, marks=marks, opId=op_id)
+
+    def withdraw_marks(
+        self, recording_id: str, *, mark_ids: list[str] | None = None
+    ) -> dict[str, Any]:
+        return self.call("withdraw_marks", id=recording_id, markIds=mark_ids)
+
+    def create_review_task(
+        self,
+        recording_ids: list[str],
+        *,
+        member_id: str,
+        mode: str,
+        confirm_machine_seen: bool = False,
+    ) -> dict[str, Any]:
+        return self.call(
+            "create_review_task",
+            ids=recording_ids,
+            memberId=member_id,
+            mode=mode,
+            confirmMachineSeen=confirm_machine_seen or None,
+        )
+
+    def request_analysis(self, recording_id: str) -> dict[str, Any]:
+        return self.call("request_analysis", id=recording_id)
 
     # -- terminal sign-in (contract section 5) -------------------------------
 
     def cli_login_start(
-        self, *, device_name: str, client_version: str = __version__
+        self,
+        *,
+        device_name: str,
+        client_version: str = __version__,
+        scopes: list[str] | tuple[str, ...] | None = None,
     ) -> dict[str, Any]:
-        body = {
+        body: dict[str, Any] = {
             "action": "start",
             "deviceName": device_name[:64],
             "clientVersion": client_version[:32],
         }
+        if scopes is not None and tuple(scopes) != (sc.READ,):
+            # A version 1 server ignores keys it does not know; read alone is the default.
+            body["scopes"] = list(sc.normalise(scopes))
         data = self._post(CLI_LOGIN_PATH, body, token=None, login_endpoint=True)
         for key in ("sessionId", "pollSecret", "approvalUrl"):
             if not isinstance(data.get(key), str):

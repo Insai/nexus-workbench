@@ -239,6 +239,8 @@ class StoredToken:
     token_id: str | None = None
     workspace_id: str | None = None
     saved_at: str | None = None
+    #: The token's scopes as saved with it (contract 7.10); None when not known.
+    scopes: tuple[str, ...] | None = None
 
     @property
     def masked(self) -> str:
@@ -249,16 +251,29 @@ def _now() -> str:
     return _dt.datetime.now(_dt.timezone.utc).replace(microsecond=0).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _scopes_of(value: Any) -> tuple[str, ...] | None:
+    from .scopes import normalise  # noqa: PLC0415 - avoids an import cycle
+
+    if not isinstance(value, list) or not all(isinstance(s, str) for s in value):
+        return None
+    return normalise(value)
+
+
 def save_token(
     api_base: str,
     token: str,
     *,
     workspace_id: str | None = None,
     token_id_value: str | None = None,
+    scopes: list[str] | tuple[str, ...] | None = None,
     use_keyring: bool = False,
     path: Path | None = None,
 ) -> str:
-    """Validate and store a token for ``api_base``. Returns where it went: "file" or "keyring"."""
+    """Validate and store a token for ``api_base``. Returns where it went: "file" or "keyring".
+
+    ``scopes`` are saved beside the token when known, so commands and the MCP server can tell
+    what it may do without a call.
+    """
     validate_token(token)
     store = _read_store(path)
     record: dict[str, Any] = {
@@ -266,6 +281,9 @@ def save_token(
         "workspaceId": workspace_id,
         "savedAt": _now(),
     }
+    known = _scopes_of(list(scopes)) if scopes is not None else None
+    if known is not None:
+        record["scopes"] = list(known)
     where = "file"
     if use_keyring and _keyring_set(api_base, token):
         record["token"] = None
@@ -301,6 +319,7 @@ def load_token(api_base: str, *, path: Path | None = None) -> StoredToken:
         "token_id": record.get("tokenId"),
         "workspace_id": record.get("workspaceId"),
         "saved_at": record.get("savedAt"),
+        "scopes": _scopes_of(record.get("scopes")),
     }
     if record.get("keyring"):
         token = _keyring_get(api_base)
@@ -318,6 +337,30 @@ def load_token(api_base: str, *, path: Path | None = None) -> StoredToken:
             "Run `nexus-workbench logout`, then `nexus-workbench login`."
         ) from None
     return StoredToken(token=token, source="file", **meta)
+
+
+def save_scopes(
+    api_base: str,
+    token_id_value: str,
+    scopes: list[str] | tuple[str, ...],
+    *,
+    path: Path | None = None,
+) -> bool:
+    """Record the scopes the server reported for the saved token of ``api_base``.
+
+    Only when the saved token is the one with ``token_id_value``. Returns True when the file
+    changed. A token from ``NEXUS_TOKEN`` is not saved, so its scopes are not either.
+    """
+    known = _scopes_of(list(scopes))
+    store = _read_store(path)
+    record = store.get(api_base)
+    if known is None or not isinstance(record, dict) or record.get("tokenId") != token_id_value:
+        return False
+    if _scopes_of(record.get("scopes")) == known:
+        return False
+    record["scopes"] = list(known)
+    _write_store(store, path)
+    return True
 
 
 def delete_token(api_base: str, *, path: Path | None = None) -> bool:
