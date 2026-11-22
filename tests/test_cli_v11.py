@@ -73,10 +73,26 @@ def test_login_asks_for_scopes_and_saves_what_was_approved(
     assert cli.main(["login", "--scope", "detail", "--scope", "marks:write"]) == 0
     out = capsys.readouterr().out
     assert "Asking for scopes: read, detail, marks:write" in out
+    assert "Write scopes can be approved only in a workspace where Insai" in out
     assert "Scopes: read, detail" in out
     assert "Workbench approved fewer scopes than asked; left out: marks:write." in out
     assert requests(api)[0]["scopes"] == ["read", "detail", "marks:write"]
     assert auth.load_token(API_BASE).scopes == ("read", "detail")
+
+
+def test_login_says_when_write_scopes_were_refused(
+    api: FakeAPI, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    # The approval page refuses write scopes while writes are off (contract 7.9); a server
+    # that passes the refusal on to exchange gets one clear sentence.
+    api.login_errors = {"exchange": [(403, "write_access_required")]}
+    opened: list[str] = []
+    monkeypatch.setattr("webbrowser.open", lambda url: opened.append(url) or True)
+    monkeypatch.setattr("builtins.input", lambda text: api.approve(opened[-1], scopes=["read"]))
+    assert cli.main(["login", "--scope", "tasks:write"]) == 1
+    err = capsys.readouterr().err
+    assert "Workbench refused to approve write scopes" in err
+    assert "`nexus-workbench login --scope detail`" in err
 
 
 def test_login_without_scope_sends_none(api: FakeAPI, monkeypatch: pytest.MonkeyPatch, capsys):
@@ -85,7 +101,8 @@ def test_login_without_scope_sends_none(api: FakeAPI, monkeypatch: pytest.Monkey
     monkeypatch.setattr("builtins.input", lambda text: api.approve(opened[-1]))
     assert cli.main(["login"]) == 0
     assert "scopes" not in requests(api)[0]  # version 1 behaviour: read only
-    assert "Scopes: read" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "Scopes: read" in out and "Write scopes" not in out
     assert auth.load_token(API_BASE).scopes == ("read",)
 
 
@@ -162,7 +179,8 @@ def test_nights_and_layers(api: FakeAPI, capsys) -> None:
     assert cli.main(["layers"]) == 0
     out = capsys.readouterr().out.splitlines()
     assert out[0].split()[:3] == ["LAYER", "ORIGIN", "STATUS"]
-    assert out[1].split() == ["analysis:ladder-3", "analysis", "stable", "2", "1", "1", "1", "2"]
+    # e_2 is held and e_3 has a blind desk: both are hidden.
+    assert out[1].split() == ["analysis:ladder-3", "analysis", "stable", "1", "1", "1", "2", "1"]
 
 
 def test_events_table_and_save(api: FakeAPI, tmp_path: Path, capsys) -> None:
@@ -334,23 +352,40 @@ def test_task_give(api: FakeAPI, capsys) -> None:
     assert cli.main(argv) == 0
     out = capsys.readouterr().out
     assert out.startswith(f"Gave {OTHER} 1 blind task (batch batch_0001): e_2")
+    assert "Workbench emailed the member about the new tasks." in out
     assert "machine_seen" in out and "--confirm-machine-seen" in out
     assert "open_task" in out
     assert cli.main(["task", "give", "e_1", "--member", OTHER, "--mode", "assisted"]) == 1
-    assert "No task was given." in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "No task was given." in out and "email" not in out
+    assert cli.main(["task", "give", "e_4", "--member", OTHER, "--mode", "assisted"]) == 0
+    assert "Workbench sent no email this time" in capsys.readouterr().out  # the mail brake
     assert cli.main(["task", "give", "e_1", "--member", "bob", "--mode", "blind"]) == 2
 
 
 def test_analyse(api: FakeAPI, capsys) -> None:
     sign_in(api)
+    assert cli.main(["analyse", "e_4"]) == 1
+    assert capsys.readouterr().err.startswith(
+        "Starting an analysis from an agent is not available yet (not_available). "
+        "Use Analyse on the recording page."
+    )
+    assert cli.main(["analyse", "e_4", "--json"]) == 1
+    assert json.loads(capsys.readouterr().err)["error"]["code"] == "not_available"
+    assert cli.main(["analyse", "e_1"]) == 1
+    assert "(already_analysed)" in capsys.readouterr().err
+    api.recordings[0]["hasEvents"] = False
+    assert cli.main(["analyse", "e_0"]) == 1
+    assert "only the person who uploaded" in capsys.readouterr().err
+
+
+def test_analyse_on_a_server_that_starts_runs(api: FakeAPI, capsys) -> None:
+    api.analysis_available = True
+    sign_in(api)
     assert cli.main(["analyse", "e_4"]) == 0
     assert "Analysis started for e_4." in capsys.readouterr().out
     assert cli.main(["analyze", "e_4", "--json"]) == 0
     assert json.loads(capsys.readouterr().out) == {"status": "already"}
-    assert cli.main(["analyse", "e_1"]) == 1
-    assert "(already_analysed)" in capsys.readouterr().err
-    assert cli.main(["analyse", "e_0"]) == 1
-    assert "only the person who uploaded" in capsys.readouterr().err
 
 
 def test_old_server_says_not_available_yet(api: FakeAPI, capsys) -> None:

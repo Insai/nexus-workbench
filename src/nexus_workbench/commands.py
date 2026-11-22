@@ -575,6 +575,15 @@ def cmd_task_give(args: argparse.Namespace) -> int:
             )
         else:
             print("No task was given.")
+        mailed = data.get("mailed")
+        if given and mailed is True:
+            print("Workbench emailed the member about the new tasks.")
+        elif given and mailed is False:
+            print(
+                "Workbench sent no email this time (at most one a minute and five an hour per "
+                "member, and none for tasks you give yourself). The tasks are on the member's "
+                "Tasks page either way."
+            )
         if refused:
             print(
                 render(
@@ -848,8 +857,9 @@ def add_parsers(add: Callable[..., argparse.ArgumentParser]) -> None:
         help="give a member review tasks on recordings",
         description=(
             "Give a member review tasks on 1 to 100 recordings, as you would from the page. "
-            "The member gets the page's one email. Recordings that cannot be given are listed "
-            "with the reason. Exit 1 only when none was given. Needs the tasks:write scope."
+            "The member gets the page's one email, at most one a minute and five an hour. "
+            "Recordings that cannot be given are listed with the reason. Exit 1 only when none "
+            "was given. Needs the tasks:write scope."
         ),
         epilog=(
             "example:\n  nexus-workbench task give e_1 e_2 --member m_0123456789abcdef --mode blind"
@@ -871,7 +881,9 @@ def add_parsers(add: Callable[..., argparse.ArgumentParser]) -> None:
         "analyse",
         "ask for an analysis of a recording you uploaded (analysis:run scope)",
         "Ask Workbench to analyse a recording you uploaded that has no machine output yet, as "
-        "Analyse in the recording editor does. Needs the analysis:run scope.",
+        "Analyse in the recording editor does. Needs the analysis:run scope. For now Workbench "
+        "checks the request and answers not_available without starting anything; use Analyse "
+        "on the recording page.",
         epilog="example:\n  nexus-workbench analyse e_123",
         aliases=["analyze"],
     )

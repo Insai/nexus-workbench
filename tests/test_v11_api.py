@@ -14,7 +14,7 @@ import pytest
 from nexus_workbench import auth
 from nexus_workbench import client as c
 from nexus_workbench import scopes as sc
-from tests.fake_api import ME, OTHER, OWNER, SERVICE, FakeAPI, sample_data_v11
+from tests.fake_api import ME, OTHER, OWNER, SERVICE, FakeAPI, Refused, sample_data_v11
 
 ALL = list(sc.ALL)
 
@@ -182,12 +182,13 @@ def test_list_nights(api: FakeAPI) -> None:
         client.list_nights(project_id="p_nope")
 
 
-def test_list_layers_hides_held_recordings(api: FakeAPI) -> None:
+def test_list_layers_hides_held_recordings_and_blind_desks(api: FakeAPI) -> None:
     client, _ = make(api)
     layer = client.list_layers()["layers"][0]
     assert layer["origin"] == "analysis" and layer["status"] == "stable"
     recs = {r["id"]: r for r in layer["recordings"]}
-    assert recs["e_2"] == {"id": "e_2", "hidden": "blind"}
+    assert recs["e_2"] == {"id": "e_2", "hidden": "blind"}  # held
+    assert recs["e_3"] == {"id": "e_3", "hidden": "blind"}  # blind desk
     assert recs["e_1"]["state"] == "have" and recs["e_1"]["counts"] == {"spindle": 1}
     assert recs["e_0"] == {"id": "e_0", "state": "notRun"}
     assert recs["e_4"] == {"id": "e_4", "state": "missing"}
@@ -204,6 +205,10 @@ def test_get_events_pages_and_blinding(api: FakeAPI) -> None:
     assert [e["onsetSec"] for e in first["events"] + rest["events"]] == [300, 300, 420.5, 600]
     with pytest.raises(c.InvalidArgument):  # a cursor is bound to the same arguments
         client.get_events("e_1", kind="spindle", limit=2, cursor=first["nextCursor"])
+    tampered = first["nextCursor"].replace(".", "0.", 1)
+    with pytest.raises(c.InvalidArgument) as info:  # a cursor is signed
+        client.get_events("e_1", limit=2, cursor=tampered)
+    assert "not a cursor of this list" in str(info.value)
     assert client.get_events("e_2") == {"hidden": "blind"}  # held
     assert client.get_events("e_3") == {"hidden": "blind"}  # blind desk
     assert client.get_events("e_4")["available"] is False
@@ -386,6 +391,7 @@ def test_create_review_task_refusals(api: FakeAPI) -> None:
         "batchId": None,
         "given": [],
         "refused": [{"id": "e_1", "code": "open_task"}],
+        "mailed": False,
     }
     assert client.create_review_task(["e_4"], member_id=OTHER, mode="assisted")["given"] == ["e_4"]
     assert api.tasks[-1]["givenBy"] == ME  # given by the token's owner, never the agent
@@ -396,21 +402,182 @@ def test_create_review_task_refusals(api: FakeAPI) -> None:
         client.create_review_task(["e_1"], member_id="m_0000000000000099", mode="blind")
 
 
-def test_request_analysis(api: FakeAPI) -> None:
+def test_request_analysis_is_checked_then_not_available(api: FakeAPI) -> None:
     client, _ = make(api, ALL)
-    assert client.request_analysis("e_4") == {"status": "started"}
-    assert client.request_analysis("e_4") == {"status": "already"}
-    with pytest.raises(c.AlreadyAnalysed) as info:
+    with pytest.raises(c.NotAvailable) as info:
+        client.request_analysis("e_4")
+    assert info.value.status == 501 and info.value.code == "not_available"
+    assert str(info.value) == (
+        "Starting an analysis from an agent is not available yet. "
+        "Use Analyse on the recording page."
+    )
+    assert "e_4" not in api.pending_analysis and api.audit == []  # nothing started
+    with pytest.raises(c.AlreadyAnalysed) as info:  # machine output is checked first
         client.request_analysis("e_1")
     assert info.value.status == 409
+    with pytest.raises(c.AlreadyAnalysed):  # events alone count as machine output
+        client.request_analysis("e_0")
+    api.recordings[0]["hasEvents"] = False
     with pytest.raises(c.Forbidden) as info:
         client.request_analysis("e_0")  # uploaded by someone else
     assert "only the person who uploaded" in str(info.value)
+    api.not_a_file.add("e_0")
+    with pytest.raises(c.InvalidArgument):  # not a file is checked before the uploader
+        client.request_analysis("e_0")
+    api.pending_analysis.add("e_0")
+    assert client.request_analysis("e_0") == {"status": "already"}  # before the uploader too
+    with pytest.raises(c.NotFound):
+        client.request_analysis("e_nope")
+
+
+def test_request_analysis_on_a_server_that_starts_runs(api: FakeAPI) -> None:
+    api.analysis_available = True
+    client, _ = make(api, ALL)
+    assert client.request_analysis("e_4") == {"status": "started"}
+    assert client.request_analysis("e_4") == {"status": "already"}
     staff, _ = make(api, ALL, staff=True)
-    api.not_a_file.add("e_3")
-    with pytest.raises(c.InvalidArgument):
-        staff.request_analysis("e_3")
+    api.recordings[0]["hasEvents"] = False
     api.analysis_service_down = True
     with pytest.raises(c.InternalError):
         staff.request_analysis("e_0")
     assert [a["recordingId"] for a in api.audit] == ["e_4"]
+
+
+# -- what the 1.1 server does beyond the draft -------------------------------------------------
+
+
+def test_list_layers_reads_the_newest_1000_recordings(api: FakeAPI) -> None:
+    api.recordings = [
+        {"id": f"r_{i:04d}", "projectId": None, "addedAt": f"2026-01-01T00:00:{i % 60:02d}Z"}
+        | {"url": "https://workbench.test.invalid/r", "hasEvents": False}
+        for i in range(1001)
+    ]
+    api.held, api.blind_desk = set(), set()
+    layer = make(api)[0].list_layers()["layers"][0]
+    assert len(layer["recordings"]) == 1000 and layer["truncated"] is True
+
+
+def test_get_events_too_large(api: FakeAPI) -> None:
+    api.too_large.add("e_1")
+    client, _ = make(api, ["read", "detail"])
+    with pytest.raises(c.TooLarge) as info:
+        client.get_events("e_1")
+    assert info.value.status == 409 and info.value.code == "too_large"
+    assert str(info.value).endswith("Open the recording in Workbench instead.")
+
+
+def test_list_marks_page_may_be_short_with_a_cursor(api: FakeAPI) -> None:
+    api.marks_read = 2  # the server reads 5,000 stored rows a call; notes count toward it
+    client, _ = make(api, ["read", "detail"])
+    seen: list[str] = []
+    page = client.list_marks("e_1", limit=500)
+    assert len(page["marks"]) < 500 and page["nextCursor"]
+    calls = 1
+    while True:
+        seen += [m["id"] for m in page["marks"]]
+        if not page["nextCursor"]:
+            break
+        page = client.list_marks("e_1", limit=500, cursor=page["nextCursor"])
+        calls += 1
+    assert seen == ["h2", "h1", "analysis-ladder-3-00017"] and calls == 2
+
+
+def test_create_review_task_mails_with_a_brake_and_audits_once(api: FakeAPI) -> None:
+    client, _ = make(api, ALL)
+    first = client.create_review_task(["e_2", "e_4"], member_id=OTHER, mode="assisted")
+    assert first["given"] == ["e_2", "e_4"] and first["mailed"] is True
+    (row,) = api.audit
+    assert row["recordingIds"] == ["e_2", "e_4"]  # one row naming every recording given
+    api.tasks.clear()
+    again = client.create_review_task(["e_2"], member_id=OTHER, mode="assisted")
+    assert again["given"] == ["e_2"] and again["mailed"] is False  # 1 a minute
+    api.clock = 61
+    api.tasks.clear()
+    assert client.create_review_task(["e_2"], member_id=OTHER, mode="assisted")["mailed"] is True
+    for minute in range(2, 6):
+        api.clock = 61 * minute
+        api.tasks.clear()
+        client.create_review_task(["e_2"], member_id=OTHER, mode="assisted")
+    assert api.emails == [OTHER] * 5  # 5 an hour
+    mine = client.create_review_task(["e_2"], member_id=ME, mode="assisted")
+    assert mine["given"] == ["e_2"] and mine["mailed"] is False  # no mail to yourself
+
+
+def test_access_off_turns_writes_off_and_on_leaves_them_off(api: FakeAPI) -> None:
+    client, _ = make(api, ALL)
+    assert api.token_list() == {"agentAccess": True, "agentWrite": True}
+    api.set_access(False)
+    assert api.workspace_audit == ["agent_access_off", "agent_write_off"]
+    with pytest.raises(c.EarlyAccessRequired):
+        client.propose_marks("e_1", [MARK])
+    api.set_access(True)
+    assert api.token_list() == {"agentAccess": True, "agentWrite": False}
+    with pytest.raises(c.WriteAccessRequired):
+        client.propose_marks("e_1", [MARK])
+    api.set_access(False)
+    with pytest.raises(Refused) as info:  # only on is refused while access is off
+        api.set_write_access(True)
+    assert info.value.code == "early_access_required"
+    api.set_write_access(False)  # off always succeeds
+
+
+def test_approve_refuses_write_scopes_while_writes_are_off(api: FakeAPI) -> None:
+    api.agent_write = False
+    login = c.WorkbenchClient(api_base="https://api.test.invalid", transport=api.transport)
+    session = login.cli_login_start(device_name="lab laptop", scopes=["read", "marks:write"])
+    url = session["approvalUrl"]
+    got = api.review_get(url)
+    assert got["workspaces"][0]["agentWrite"] is False and got["scopes"] == ["read", "marks:write"]
+    with pytest.raises(Refused) as info:
+        api.approve(url)
+    assert info.value.code == "write_access_required"
+    code = api.approve(url, scopes=["read"])  # narrowed to reads: approved
+    data = login.cli_login_exchange(
+        session_id=session["sessionId"], poll_secret=session["pollSecret"], code=code
+    )
+    assert data["scopes"] == ["read"]
+    # Writes off still lets the page put a write scope on a token; it cannot write yet.
+    token = api.create_token("lab agent", ["marks:write"])
+    with pytest.raises(c.WriteAccessRequired):
+        login.with_token(token).propose_marks("e_1", [MARK])
+
+
+def test_token_names_never_hold_an_email_or_an_id(api: FakeAPI) -> None:
+    for name in ("ann@lab.example", "laptop 20261120091500"):
+        with pytest.raises(Refused) as info:
+            api.create_token(name)
+        assert info.value.code == "invalid_argument"
+    login = c.WorkbenchClient(api_base="https://api.test.invalid", transport=api.transport)
+    session = login.cli_login_start(device_name="ann@lab.example")
+    code = api.approve(session["approvalUrl"])
+    data = login.cli_login_exchange(
+        session_id=session["sessionId"], poll_secret=session["pollSecret"], code=code
+    )
+    assert login.with_token(data["token"]).call("whoami")["token"]["name"] == "nexus-workbench"
+
+
+def test_a_large_body_is_checked_against_the_token_first(api: FakeAPI) -> None:
+    client = c.WorkbenchClient(
+        api_base="https://api.test.invalid", token=auth_token(), transport=api.transport
+    )
+    marks = [dict(MARK, text="x" * 150) for _ in range(40)]  # well past 2,048 bytes
+    with pytest.raises(c.Unauthenticated):
+        client.propose_marks("e_1", marks)
+    real, _ = make(api, ALL)
+    assert real.propose_marks("e_1", marks)["accepted"] == 40
+
+
+def test_unknown_action_is_refused_before_the_token(api: FakeAPI) -> None:
+    client = c.WorkbenchClient(
+        api_base="https://api.test.invalid", token=auth_token(), transport=api.transport
+    )
+    with pytest.raises(c.InvalidArgument) as info:
+        client.call("no_such_action")
+    assert "Unknown action." in str(info.value)
+
+
+def auth_token() -> str:
+    """A well-formed token the server does not know."""
+    from tests.fake_api import make_token  # noqa: PLC0415
+
+    return make_token()

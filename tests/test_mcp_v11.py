@@ -329,21 +329,30 @@ def test_write_switch_off_message(api: FakeAPI) -> None:
 
 def test_create_review_task_and_request_analysis(api: FakeAPI) -> None:
     server = server_for(api, api.add_token(scopes=ALL), scopes=ALL)
-    given, dup, started, again, done = calls(
+    given, dup, later, done = calls(
         server,
         ("create_review_task", {"ids": ["e_2", "e_0"], "member_id": OTHER, "mode": "blind"}),
         ("create_review_task", {"ids": ["e_2", "e_2"], "member_id": OTHER, "mode": "blind"}),
-        ("request_analysis", {"id": "e_4"}),
         ("request_analysis", {"id": "e_4"}),
         ("request_analysis", {"id": "e_1"}),
     )
     assert given.structured_content["given"] == ["e_2"]
     assert given.structured_content["refused"] == [{"id": "e_0", "code": "machine_seen"}]
+    assert given.structured_content["mailed"] is True
     assert dup.is_error is True and "twice" in text_of(dup)
-    assert started.structured_content == {"status": "started"}
-    assert again.structured_content == {"status": "already"}
+    assert later.is_error is True
+    assert text_of(later) == (
+        "Starting an analysis from an agent is not available yet. "
+        "Use Analyse on the recording page."
+    )
     assert done.is_error is True
     assert text_of(done).startswith("This recording already has machine output")
+    api.analysis_available = True
+    started, again = calls(
+        server, ("request_analysis", {"id": "e_4"}), ("request_analysis", {"id": "e_4"})
+    )
+    assert started.structured_content == {"status": "started"}
+    assert again.structured_content == {"status": "already"}
 
 
 # -- bridges: workspace sides for the local comparisons ----------------------------------------

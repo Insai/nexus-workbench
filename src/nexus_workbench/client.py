@@ -250,6 +250,20 @@ class MarkLimit(WorkbenchError):
     default_hint = "Nothing was written. Propose fewer marks."
 
 
+class NotAvailable(WorkbenchError):
+    """HTTP 501: the server checked the call but cannot do it yet (contract 7.7)."""
+
+    code = "not_available"
+    default_message = "Workbench cannot do this through the agent API yet."
+    default_hint = "Do it on the Workbench page instead."
+
+
+class TooLarge(WorkbenchError):
+    code = "too_large"
+    default_message = "This recording's events are too large to read through the agent API."
+    default_hint = "Open the recording in Workbench instead."
+
+
 class NotOnServer(InvalidArgument):
     """A version 1.1 action sent to a version 1 server (contract section 7)."""
 
@@ -280,7 +294,17 @@ ERRORS_BY_CODE: dict[str, type[WorkbenchError]] = {
         WriteAccessRequired,
         AlreadyAnalysed,
         MarkLimit,
+        NotAvailable,
+        TooLarge,
     )
+}
+
+#: The sentence and advice for ``not_available`` on the actions that send it.
+NOT_AVAILABLE_BY_ACTION: dict[str, tuple[str, str]] = {
+    "request_analysis": (
+        "Starting an analysis from an agent is not available yet.",
+        "Use Analyse on the recording page.",
+    ),
 }
 
 #: A clearer sentence for ``forbidden`` on the actions where it has a second meaning.
@@ -467,6 +491,9 @@ def error_from_response(
         return ScopeRequired(scope if isinstance(scope, str) else None, have=have, status=status)
     if cls is Forbidden and action in FORBIDDEN_BY_ACTION:
         return Forbidden(FORBIDDEN_BY_ACTION[action], status=status)
+    if cls is NotAvailable and action in NOT_AVAILABLE_BY_ACTION:
+        message, hint = NOT_AVAILABLE_BY_ACTION[action]
+        return NotAvailable(message, hint=hint, status=status)
     return cls(status=status)
 
 

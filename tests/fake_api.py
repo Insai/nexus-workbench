@@ -1,13 +1,17 @@
 """An in-memory fake of the Workbench agent API (contract sections 3, 5 and 7).
 
 Used through ``httpx.MockTransport``; no test touches the network. Version 1.1 (section 7)
-is implemented as written: scopes, the two workspace switches, blinding, caps, the review
-layer of agent marks, idempotent ``opId``, the audit log and the order of checks.
+is implemented as the 1.1 server behaves: scopes, the two workspace switches (access off
+clears writes; approve refuses write scopes while writes are off), blinding, caps, the review
+layer of agent marks, idempotent ``opId``, signed cursors, ``too_large`` events, the task
+mail brake and ``mailed``, ``request_analysis`` answering 501 ``not_available``, the audit log
+and the order of checks.
 """
 
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import re
 import secrets
@@ -49,6 +53,15 @@ MAX_PROPOSE_BODY = 262_144
 OP_ID = re.compile(r"^[0-9A-Za-z_-]{1,64}$")
 MEMBER_ID = re.compile(r"^m_[0-9a-f]{16}$")
 EMAIL = re.compile(r"[^\s@]+@[^\s@]+\.[^\s@]+")
+#: What the server refuses in a token name, and in a device name it then replaces.
+NAMES_SOMEONE = re.compile(r"[^\s@]+@[^\s@]+\.[^\s@]+|\d{14}|[A-Za-z0-9]{28}")
+CURSOR_KEY = b"fake-workspace-salt"
+NOT_A_CURSOR = "'cursor' is not a cursor of this list."
+#: Annotation rows one ``list_marks`` call reads (contract 7.6).
+MARKS_READ = 5000
+LAYER_RECORDINGS_MAX = 1000
+MAIL_MIN_GAP = 60.0
+MAIL_PER_HOUR = 5
 STAGE_CODE = re.compile(r"W|N[123]|R|\?")
 
 ME = "m_00000000000000a1"
@@ -87,6 +100,19 @@ def _is_int(v: Any) -> bool:
     return isinstance(v, int) and not isinstance(v, bool)
 
 
+class Refused(Exception):
+    """A refusal of a page callable (``approve``, ``set_write_access``), with its code."""
+
+    def __init__(self, code: str, message: str = "") -> None:
+        super().__init__(code)
+        self.code = code
+        self.message = message
+
+
+def _names_someone(text: str) -> bool:
+    return bool(NAMES_SOMEONE.search(text))
+
+
 def _clean(text: str) -> str:
     """Trim and drop control, invisible characters and line breaks (contract 7.7)."""
     return "".join(ch for ch in text if ch.isprintable()).strip()
@@ -100,6 +126,7 @@ class TokenState:
     scopes: list[str] = field(default_factory=lambda: ["read"])
     member_id: str = ME
     staff: bool = False  # Insai staff may ask for an analysis of any recording
+    name: str | None = None  # None: FakeAPI.token_name
 
 
 @dataclass
@@ -110,6 +137,7 @@ class LoginSession:
     attempts_left: int = 5
     used: bool = False
     scopes: list[str] = field(default_factory=lambda: ["read"])
+    device_name: str = ""
 
 
 @dataclass
@@ -142,6 +170,7 @@ class FakeAPI:
 
     # -- version 1.1 (contract section 7) ---------------------------------------------------
     v11: bool = True  # False: a version 1 server, which answers 1.1 actions "Unknown action"
+    agent_access: bool = True  # the workspace's agentAccess switch (section 7.2)
     agent_write: bool = False  # the agentWrite switch (section 7.2)
     members: list[dict[str, Any]] = field(default_factory=list)
     held: set[str] = field(default_factory=set)  # recordings the caller is held blind on
@@ -163,10 +192,18 @@ class FakeAPI:
     uploader: dict[str, str] = field(default_factory=dict)  # recording id -> member id
     not_a_file: set[str] = field(default_factory=set)  # recordings not uploaded as a file
     pending_analysis: set[str] = field(default_factory=set)
+    # False, as the 1.1 server today: request_analysis checks, then answers 501 not_available.
+    # True: a later server that starts the run.
+    analysis_available: bool = False
     analysis_service_down: bool = False
+    too_large: set[str] = field(default_factory=set)  # recordings whose events are over 20 MB
+    marks_read: int = MARKS_READ  # annotation rows one list_marks call reads
     audit: list[dict[str, Any]] = field(default_factory=list)
+    workspace_audit: list[str] = field(default_factory=list)  # agent_write_off and the like
     write_calls: int = 0
     emails: list[str] = field(default_factory=list)  # member ids sent a task email
+    clock: float = 0.0  # seconds; tests move it to pass the task mail brake
+    _mail_times: dict[str, list[float]] = field(default_factory=dict)
     _batches: int = 0
 
     @property
@@ -224,24 +261,51 @@ class FakeAPI:
 
     # -- sections 3 and 7: the order of checks of section 7.3 ---------------------------------
 
-    def _agent(self, request: httpx.Request) -> httpx.Response:
-        body = self._body(request)
-        if isinstance(body, httpx.Response):
-            return body
+    def _token(self, request: httpx.Request) -> tuple[str, TokenState] | httpx.Response:
         header = request.headers.get("Authorization", "")
         token = header.removeprefix("Bearer ") if header.startswith("Bearer ") else ""
         state = self.tokens.get(token)
         if state is None:
-            return _error(401, "unauthenticated", "Sign-in failed.")
+            return _error(401, "unauthenticated", "Sign in with a valid token.")
         if state.expired:
             return _error(401, "token_expired", "The token has expired.")
+        return token, state
+
+    def _known(self, action: Any) -> bool:
+        v1 = {"whoami", "list_projects", "list_recordings", "get_recording"}
+        return action in v1 or (self.v11 and action in V11_ACTIONS)
+
+    def _agent(self, request: httpx.Request) -> httpx.Response:
+        # The server's order: method and the largest body; a body past 2,048 bytes is parsed
+        # for a verified token only; then the action's name and its own body limit.
+        if request.method != "POST":
+            return _error(405, "invalid_argument", "Use POST.")
+        raw = request.content
+        if len(raw) > MAX_PROPOSE_BODY:
+            return _bad(f"The body is at most {MAX_PROPOSE_BODY} bytes.")
+        verified = self._token(request) if len(raw) > MAX_BODY else None
+        if isinstance(verified, httpx.Response):
+            return verified
+        try:
+            body = json.loads(raw)
+        except ValueError:
+            return _bad("The body must be a JSON object.")
+        if not isinstance(body, dict):
+            return _bad("The body must be a JSON object.")
+        action = body.get("action")
+        if not self._known(action):
+            return _bad("Unknown action.")
+        if len(raw) > MAX_BODY and action != "propose_marks":
+            return _bad(f"The body of {action} is at most {MAX_BODY} bytes.")
+        if verified is None:
+            verified = self._token(request)
+            if isinstance(verified, httpx.Response):
+                return verified
+        token, state = verified
         if not state.workspace_ok:
             return _error(403, "forbidden", "No access.")
-        if not state.early_access:
+        if not state.early_access or not self.agent_access:
             return _error(403, "early_access_required", "Agent access is off.")
-        action = body.get("action")
-        if action in V11_ACTIONS and not self.v11:
-            return _bad("Unknown action.")
         need = WRITE_ACTIONS.get(str(action)) or ("detail" if action in DETAIL_ACTIONS else None)
         if need and need not in state.scopes:
             return _error(
@@ -250,8 +314,12 @@ class FakeAPI:
                 f"This token lacks the {need} scope. Make a token with the {need} scope.",
                 scope=need,
             )
-        if action in WRITE_ACTIONS and not self.agent_write:
-            return _error(403, "write_access_required", "Agent writes are off.")
+        if action in WRITE_ACTIONS and not self.write_on:
+            return _error(
+                403,
+                "write_access_required",
+                "Agent writes are not switched on for this workspace. Ask Insai.",
+            )
         tid = auth.token_id(token)
         if action in WRITE_ACTIONS:
             self.write_calls += 1
@@ -264,7 +332,7 @@ class FakeAPI:
                     "memberId": state.member_id,
                     "token": {
                         "id": tid,
-                        "name": self.token_name,
+                        "name": self.token_name if state.name is None else state.name,
                         "createdAt": "2026-11-20T09:15:00Z",
                         "expiresAt": "2027-02-18T09:15:00Z",
                     },
@@ -286,10 +354,13 @@ class FakeAPI:
                 for key in ("stageMinutes", "eventCounts", "humanCounts"):
                     out.pop(key, None)
             return _ok(out)
-        handler = getattr(self, f"_a_{action}", None) if action in V11_ACTIONS else None
-        if handler is None:
-            return _bad("Unknown action.")
+        handler = getattr(self, f"_a_{action}")
         return handler(body, state, tid)
+
+    @property
+    def write_on(self) -> bool:
+        """``agentWrite`` in effect: never on while ``agentAccess`` is off (section 7.2)."""
+        return self.agent_access and self.agent_write
 
     def _list_recordings(self, body: dict[str, Any]) -> httpx.Response:
         project_id = body.get("projectId")
@@ -352,28 +423,55 @@ class FakeAPI:
         limit = body.get("limit", default)
         if not _is_int(limit) or not 1 <= limit <= most:
             return _bad(f"limit must be 1 to {most}.")
-        offset = 0
-        cursor = body.get("cursor")
-        tag = hashlib.sha256(self._cursor_args(action, body, keys).encode()).hexdigest()[:8]
-        if cursor is not None:
-            prefix, _, rest = str(cursor).partition(":")
-            if prefix != tag or not rest.isdigit():
-                return _bad("The cursor is stale.")
-            offset = int(rest)
+        offset = self._read_cursor(action, body, keys)
+        if isinstance(offset, httpx.Response):
+            return offset
         nxt = offset + limit
-        return rows[offset:nxt], (f"{tag}:{nxt}" if nxt < len(rows) else None)
-
-    def _audit(self, tid: str, state: TokenState, action: str, rec: str | None, **counts: int):
-        self.audit.append(
-            {
-                "action": action,
-                "by": state.member_id,
-                "via": "agent",
-                "tokenId": tid,
-                "recordingId": rec,
-                "counts": counts,
-            }
+        return rows[offset:nxt], (
+            self._cursor(action, body, keys, nxt) if nxt < len(rows) else None
         )
+
+    def _cursor(self, action: str, body: dict[str, Any], keys: tuple[str, ...], at: int) -> str:
+        """A signed cursor: bound to the action and its arguments (as the server's are)."""
+        text = f"{self._cursor_args(action, body, keys)}|{at}"
+        sig = hmac.new(CURSOR_KEY, text.encode(), hashlib.sha256).hexdigest()[:16]
+        return f"{at}.{sig}"
+
+    def _read_cursor(
+        self, action: str, body: dict[str, Any], keys: tuple[str, ...]
+    ) -> int | httpx.Response:
+        cursor = body.get("cursor")
+        if cursor is None:
+            return 0
+        at, _, sig = str(cursor).partition(".")
+        if not at.isdigit():
+            return _bad(NOT_A_CURSOR)
+        text = f"{self._cursor_args(action, body, keys)}|{at}"
+        want = hmac.new(CURSOR_KEY, text.encode(), hashlib.sha256).hexdigest()[:16]
+        if not hmac.compare_digest(sig, want):
+            return _bad(NOT_A_CURSOR)  # modified, or made for other arguments
+        return int(at)
+
+    def _audit(
+        self,
+        tid: str,
+        state: TokenState,
+        action: str,
+        rec: str | None,
+        recordings: list[str] | None = None,
+        **counts: int,
+    ) -> None:
+        row: dict[str, Any] = {
+            "action": action,
+            "by": state.member_id,
+            "via": "agent",
+            "tokenId": tid,
+            "recordingId": rec,
+            "counts": counts,
+        }
+        if recordings is not None:
+            row["recordingIds"] = list(recordings)
+        self.audit.append(row)
 
     # -- 7.6 reads -----------------------------------------------------------------------------
 
@@ -424,12 +522,15 @@ class FakeAPI:
         rows = self._project_rows(body)
         if isinstance(rows, httpx.Response):
             return rows
-        ids = [r["id"] for r in rows]
+        # Layers are found on, and list, the newest 1,000 recordings (section 7.6).
+        newest = sorted(rows, key=lambda r: (r["addedAt"], r["id"]), reverse=True)
+        ids = [r["id"] for r in newest[:LAYER_RECORDINGS_MAX]]
+        more = len(newest) > LAYER_RECORDINGS_MAX
         layers = []
         for layer in self.analysis_layers:
             recs = []
             for rec_id in ids:
-                if rec_id in self.held:
+                if self._hidden(rec_id):
                     recs.append({"id": rec_id, "hidden": "blind"})
                     continue
                 entry = layer["recordings"].get(rec_id, {"state": "missing"})
@@ -441,15 +542,15 @@ class FakeAPI:
                     "version": layer["version"],
                     "origin": "analysis",
                     "status": layer.get("status", "unknown"),
-                    "recordings": recs[:1000],
-                    "truncated": len(recs) > 1000,
+                    "recordings": recs,
+                    "truncated": more,
                 }
             )
         agent_tokens = sorted({t for (t, _r) in self.agent_rows})
         for token_id in agent_tokens:
             recs = []
             for rec_id in ids:
-                if rec_id in self.held:
+                if self._hidden(rec_id):
                     recs.append({"id": rec_id, "hidden": "blind"})
                     continue
                 live = [a for a in self.agent_rows.get((token_id, rec_id), []) if not a.withdrawn]
@@ -467,8 +568,8 @@ class FakeAPI:
                     "version": token_id,
                     "origin": "agent",
                     "status": "proposed",
-                    "recordings": recs[:1000],
-                    "truncated": len(recs) > 1000,
+                    "recordings": recs,
+                    "truncated": more,
                 }
             )
         return _ok({"layers": layers, "truncated": False})
@@ -492,7 +593,14 @@ class FakeAPI:
         if self._hidden(rec["id"]):
             return _ok({"hidden": "blind"})
         if not rec.get("hasEvents"):
-            return _ok({"available": False, "kinds": [], "nextCursor": None})
+            return _ok({"available": False})
+        if rec["id"] in self.too_large:
+            return _error(
+                409,
+                "too_large",
+                "This recording's events are too large to read through the agent API. "
+                "Open it in Workbench.",
+            )
         events = self.events.get(rec["id"], [])
         rows = sorted(
             (e for e in events if kind is None or e["kind"] == kind),
@@ -572,15 +680,18 @@ class FakeAPI:
         hidden = self._hidden(rec_id)
         if hidden and origin in ("machine", "agent"):
             return _ok({"marks": [], "nextCursor": None, "hidden": "blind"})
-        rows: list[dict[str, Any]] = []
+        # Every stored row, in (t0, id) order, with whether this call lists it: the server reads
+        # up to ``marks_read`` stored rows a call, so a page may come back short with a cursor.
+        stored: list[tuple[dict[str, Any], bool]] = []
         for m in self.human_marks.get(rec_id, []):
-            if m.get("deleted") or m.get("kind") == "note":
-                continue
+            keep = not (m.get("deleted") or m.get("kind") == "note")
             if held and m.get("author") != state.member_id:
-                continue
-            rows.append({k: v for k, v in m.items() if k not in ("deleted", "text")})
+                keep = False
+            stored.append(({k: v for k, v in m.items() if k not in ("deleted", "text")}, keep))
+        for m in self.machine_marks.get(rec_id, []):
+            stored.append((dict(m, origin="machine"), not hidden))
+        rows: list[dict[str, Any]] = []
         if not hidden:
-            rows += [dict(m, origin="machine") for m in self.machine_marks.get(rec_id, [])]
             for (token_id, r), agent in self.agent_rows.items():
                 if r != rec_id:
                     continue
@@ -604,13 +715,24 @@ class FakeAPI:
                         if key in a.mark:
                             row[key] = a.mark[key]
                     rows.append(row)
-        if origin is not None:
-            rows = [r for r in rows if r["origin"] == origin]
-        rows.sort(key=lambda r: (r["t0"], r["id"]))
-        page = self._page("list_marks", body, rows, ("id", "origin"), 200, 500)
-        if isinstance(page, httpx.Response):
-            return page
-        out, nxt = page
+        stored += [(r, True) for r in rows]
+        stored = [(r, keep and (origin is None or r["origin"] == origin)) for r, keep in stored]
+        stored.sort(key=lambda pair: (pair[0]["t0"], pair[0]["id"]))
+        limit = body.get("limit", 200)
+        if not _is_int(limit) or not 1 <= limit <= 500:
+            return _bad("limit must be 1 to 500.")
+        offset = self._read_cursor("list_marks", body, ("id", "origin"))
+        if isinstance(offset, httpx.Response):
+            return offset
+        out: list[dict[str, Any]] = []
+        at = offset
+        for row, keep in stored[offset : offset + self.marks_read]:
+            if len(out) == limit:
+                break
+            at += 1
+            if keep:
+                out.append(row)
+        nxt = self._cursor("list_marks", body, ("id", "origin"), at) if at < len(stored) else None
         result: dict[str, Any] = {"marks": out, "nextCursor": nxt}
         if hidden:
             result["hidden"] = "blind"
@@ -801,9 +923,23 @@ class FakeAPI:
                         "doneAt": None,
                     }
                 )
-            self.emails.append(member)
-            self._audit(tid, state, "create_review_task", None, given=len(given))
-        return _ok({"batchId": batch, "given": given, "refused": refused})
+            mailed = member != state.member_id and self._mail_allowed(member)
+            if mailed:
+                self.emails.append(member)
+            # One row per call, naming every recording given.
+            self._audit(tid, state, "create_review_task", None, recordings=given, given=len(given))
+        else:
+            mailed = False
+        return _ok({"batchId": batch, "given": given, "refused": refused, "mailed": mailed})
+
+    def _mail_allowed(self, member: str) -> bool:
+        """The task mail brake: 1 a minute and 5 an hour per member (section 7.7)."""
+        times = [t for t in self._mail_times.get(member, []) if self.clock - t < 3600]
+        if (times and self.clock - times[-1] < MAIL_MIN_GAP) or len(times) >= MAIL_PER_HOUR:
+            self._mail_times[member] = times
+            return False
+        self._mail_times[member] = [*times, self.clock]
+        return True
 
     def _a_request_analysis(
         self, body: dict[str, Any], state: TokenState, tid: str
@@ -812,14 +948,27 @@ class FakeAPI:
         if isinstance(rec, httpx.Response):
             return rec
         rec_id = rec["id"]
-        if not state.staff and self.uploader.get(rec_id) != state.member_id:
-            return _error(403, "forbidden", "Only the uploader can ask for an analysis.")
-        if rec_id in self.not_a_file:
-            return _bad("This recording was not uploaded as a file.")
-        if rec.get("machineAvailable"):
+        # The server's order: already analysed, already running, not a file, not the uploader,
+        # then 501 until the analysis service takes a service identity.
+        if rec.get("machineAvailable") or rec.get("hasEvents"):
             return _error(409, "already_analysed", "This recording already has machine output.")
         if rec_id in self.pending_analysis:
             return _ok({"status": "already"})
+        if rec_id in self.not_a_file:
+            return _bad("This recording was not uploaded as a file, so it cannot be analysed here.")
+        if not state.staff and self.uploader.get(rec_id) != state.member_id:
+            return _error(
+                403,
+                "forbidden",
+                "Only the person who uploaded this recording, or Insai staff, can analyse it.",
+            )
+        if not self.analysis_available:
+            return _error(
+                501,
+                "not_available",
+                "Asking for an analysis is not available through the agent API yet. "
+                "Use Analyse in Workbench.",
+            )
         if self.analysis_service_down:
             return _error(500, "internal", "Try again.")
         self.pending_analysis.add(rec_id)
@@ -846,6 +995,7 @@ class FakeAPI:
                 session_id=secrets.token_hex(16),
                 poll_secret="".join(secrets.choice(auth.BASE62) for _ in range(43)),
                 scopes=[s for s in SCOPES if s in {"read", *asked}],
+                device_name=str(body.get("deviceName", ""))[:64],
             )
             self.sessions[session.session_id] = session
             return _ok(
@@ -876,7 +1026,11 @@ class FakeAPI:
             if self.token_limit:  # the session stays approved
                 return _error(409, "token_limit", "You already have 10 tokens.")
             session.used = True
-            token = self.add_token(scopes=list(session.scopes))
+            # The device name names the token, unless it holds an email or an id.
+            name = session.device_name.strip()
+            if not name or _names_someone(name):
+                name = "nexus-workbench"
+            token = self.add_token(scopes=list(session.scopes), name=name)
             return _ok(
                 {
                     "token": token,
@@ -889,15 +1043,81 @@ class FakeAPI:
         return _bad("Unknown action.")
 
     def approve(self, url: str, scopes: list[str] | None = None) -> str:
-        """What a person does in the browser: approve (optionally fewer scopes), read the code."""
+        """What a person does in the browser: approve (optionally fewer scopes), read the code.
+
+        Raises :class:`Refused` as the callable refuses: ``early_access_required`` when agent
+        access is off, ``write_access_required`` when the approved scopes hold a write scope
+        and the workspace's writes are off.
+        """
         session_id = url.rstrip("/").rsplit("/", 1)[-1]
         session = self.sessions[session_id]
+        if not self.agent_access:
+            raise Refused("early_access_required", "Agent access is not switched on.")
+        approved = list(session.scopes)
         if scopes is not None:
             assert "read" in scopes and set(scopes) <= set(session.scopes)
-            session.scopes = [s for s in SCOPES if s in scopes]
+            approved = [s for s in SCOPES if s in scopes]
+        if set(approved) & set(WRITE_ACTIONS.values()) and not self.write_on:
+            raise Refused(
+                "write_access_required",
+                "Agent writes are not switched on for this workspace. Ask Insai.",
+            )
+        session.scopes = approved
         code = "".join(secrets.choice(CODE_ALPHABET) for _ in range(8))
         session.code = code
         return f"{code[:4]}-{code[4:]}"
+
+    def review_get(self, url: str) -> dict[str, Any]:
+        """``workbench_cli_login_review get`` for a pending session, as the page reads it."""
+        session = self.sessions[url.rstrip("/").rsplit("/", 1)[-1]]
+        return {
+            "status": "used" if session.used else ("approved" if session.code else "pending"),
+            "deviceName": session.device_name,
+            "scopes": list(session.scopes),
+            "workspaces": [
+                {
+                    "id": "w_1",
+                    "name": self.workspace_name,
+                    "agentAccess": self.agent_access,
+                    "agentWrite": self.write_on,
+                }
+            ],
+        }
+
+    def token_list(self) -> dict[str, Any]:
+        """``workbench_agent_token list``: the switches as the page reads them."""
+        return {"agentAccess": self.agent_access, "agentWrite": self.write_on}
+
+    def create_token(self, name: str, scopes: list[str] | None = None) -> str:
+        """``workbench_agent_token create``: write scopes are allowed while writes are off."""
+        name = name.strip()
+        if not 1 <= len(name) <= 64:
+            raise Refused("invalid_argument", "A name is 1 to 64 characters.")
+        if _names_someone(name):
+            raise Refused("invalid_argument", "A name may not hold an email address or an id.")
+        if not self.agent_access:
+            raise Refused("early_access_required", "Agent access is not switched on.")
+        asked = scopes or ["read"]
+        if any(s not in SCOPES for s in asked):
+            raise Refused("invalid_argument", "Unknown scope.")
+        return self.add_token(scopes=[s for s in SCOPES if s in {"read", *asked}], name=name)
+
+    def set_access(self, on: bool) -> None:
+        """Staff ``set_access``: off also turns writes off; on leaves them off."""
+        if self.agent_access != on:
+            self.agent_access = on
+            self.workspace_audit.append("agent_access_on" if on else "agent_access_off")
+        if not on and self.agent_write:
+            self.agent_write = False
+            self.workspace_audit.append("agent_write_off")
+
+    def set_write_access(self, on: bool) -> None:
+        """Staff ``set_write_access``: on is refused while access is off; off always works."""
+        if on and not self.agent_access:
+            raise Refused("early_access_required", "Agent access is not switched on.")
+        if self.agent_write != on:
+            self.agent_write = on
+            self.workspace_audit.append("agent_write_on" if on else "agent_write_off")
 
 
 def sample_data(api: FakeAPI) -> None:
@@ -995,7 +1215,7 @@ def sample_data_v11(api: FakeAPI) -> None:
                     "index": 1,
                     "grade": "good",
                     "score": 0.9,
-                    "shares": {"ok": 0.96, "suspect": 0.03, "flat": 0.01, "railed": 0.0},
+                    "shares": {"ok": 0.96, "suspect": 0.03, "flat": 0.01},
                 },
                 {
                     "index": 2,

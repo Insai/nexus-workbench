@@ -18,8 +18,9 @@ STAGE_CODE = re.compile(r"W|N[123]|R|\?")
 STAGES_SHAPE = re.compile(r"^(?:W|N[123]|R|\?)*$")
 #: An event kind as the contract names them: plain words, no separators.
 KIND_SHAPE = re.compile(r"^[A-Za-z0-9_]{1,40}$")
-#: Pages of ``get_events`` read for one comparison (1,000 rows each).
-MAX_EVENT_PAGES = 50
+#: Pages of ``get_events`` read for one comparison (1,000 rows each). ``get_events`` is
+#: limited to 10 calls a minute per token (contract 7.3), so one comparison stays inside it.
+MAX_EVENT_PAGES = 10
 EVENTS_PER_PAGE = 1000
 
 

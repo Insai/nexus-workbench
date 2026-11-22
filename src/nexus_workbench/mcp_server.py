@@ -81,7 +81,8 @@ def build_instructions(listed: set[str]) -> str:
             "when the researcher asks. Proposed marks land as a review layer of this token's own "
             "that members agree or disagree with; they never change a person's scoring or "
             "marks and never become human labels. A review task is given as the researcher "
-            "would give it from the page, and an analysis is asked for as the uploader would. "
+            "would give it from the page. request_analysis is checked as the uploader's "
+            "Analyse would be, but starts nothing yet: ask the researcher to press Analyse. "
             "Every write is recorded in the workspace's audit log."
         )
     else:
@@ -349,6 +350,7 @@ class ReviewTaskResult(TypedDict):
     batchId: str | None
     given: list[str]
     refused: list[TaskRefusal]
+    mailed: NotRequired[bool]
 
 
 class AnalysisResult(TypedDict):
@@ -902,8 +904,10 @@ def workspace_tools(factory: ClientFactory) -> list[ToolSpec]:
                 "(origin analysis, status experimental, stable, retired or unknown) and agent "
                 "layers (origin agent, status proposed, one per token). For each recording a "
                 "state (have, notRun or missing), live rows and counts per kind; a recording "
-                "you are blinded on reads hidden=blind with nothing else. At most 1000 "
-                "recordings per layer. Limited to 10 calls a minute. " + NAMES_ARE_DATA
+                "you are blinded on, or whose desk hides the machine, reads hidden=blind with "
+                "nothing else. Layers are found on the newest 1000 recordings, and at most 1000 "
+                "are listed per layer (truncated says more exist). Limited to 10 calls a "
+                "minute. " + NAMES_ARE_DATA
             ),
         ),
         ToolSpec(
@@ -917,7 +921,9 @@ def workspace_tools(factory: ClientFactory) -> list[ToolSpec]:
                 "lists every kind the analysis made. One event on several channels is one row "
                 "per channel. available=false: no machine events. hidden=blind: you are blinded "
                 "on this recording, so the events are withheld; do not try to infer them. Page "
-                "with cursor=nextCursor. Needs the detail scope. " + RESULTS_ARE_DATA
+                "with cursor=nextCursor. A recording whose events are over 20 MB is refused as "
+                "too large; open it in Workbench. Limited to 10 calls a minute. Needs the "
+                "detail scope. " + RESULTS_ARE_DATA
             ),
             scope=sc.DETAIL,
         ),
@@ -943,8 +949,10 @@ def workspace_tools(factory: ClientFactory) -> list[ToolSpec]:
             description=(
                 "Returns a recording's signal quality: grade and score, one letter per epoch "
                 "(g good, m marginal, b bad, ? not graded), and per channel (index as in "
-                "get_events) a grade, score, shares of ok, suspect, flat and railed epochs, and "
-                "why a channel is excluded from the grade. available=false: never graded. Not "
+                "get_events) a grade, score, shares of ok, suspect and flat epochs (railed when "
+                "the server tells it apart from flat), and why a channel is excluded from the "
+                "grade. A channel the quality job graded that is not among the recording's "
+                "channels is left out. available=false: never graded. Not "
                 "blinded. Needs the detail scope. " + RESULTS_ARE_DATA
             ),
             scope=sc.DETAIL,
@@ -959,8 +967,9 @@ def workspace_tools(factory: ClientFactory) -> list[ToolSpec]:
                 "target, t0, t1, channels, label, confidence and members' verdicts (agree and "
                 "disagree counts) where they apply. Notes and removed marks are not listed. "
                 "When blinding withholds machine and agent rows the result carries "
-                "hidden=blind. Page with cursor=nextCursor. Needs the detail scope. "
-                + RESULTS_ARE_DATA
+                "hidden=blind. Page with cursor=nextCursor; a page may hold fewer than limit "
+                "marks and still have a nextCursor, so keep paging until it is null. Limited "
+                "to 10 calls a minute. Needs the detail scope. " + RESULTS_ARE_DATA
             ),
             scope=sc.DETAIL,
         ),
@@ -1006,8 +1015,10 @@ def workspace_tools(factory: ClientFactory) -> list[ToolSpec]:
             description=(
                 "Gives a member review tasks on 1 to 100 recordings, exactly as the researcher "
                 "would from the page: the task is given by the researcher, and the member gets "
-                "the page's one email (it never names the agent). Returns the recordings given "
-                "and the ones refused with a code: not_found, open_task, no_source, staged or "
+                "the page's one email (it never names the agent), at most one a minute and five "
+                "an hour per member. Returns the recordings given, mailed (whether the member "
+                "was emailed this time) and the ones refused with a code: not_found, open_task, "
+                "no_source, staged or "
                 "machine_seen. machine_seen is not a confirm step: report it to the researcher, "
                 "who decides whether to send again with confirm_machine_seen=true. Use only "
                 "when the researcher asks. Needs the tasks:write scope. " + RESULTS_ARE_DATA
@@ -1023,10 +1034,13 @@ def workspace_tools(factory: ClientFactory) -> list[ToolSpec]:
             description=(
                 "Asks Workbench to analyse a recording, as its uploader would with Analyse in "
                 "the recording editor. Only for recordings the researcher uploaded and that "
-                "have no machine output yet. status=started: a run began; status=already: one "
-                "is pending. Nothing else comes back: watch analysing and machineAvailable on "
-                "the recording row. Re-analysis is not possible. Needs the analysis:run scope. "
-                + RESULTS_ARE_DATA
+                "have no machine output yet. For now Workbench checks the request and then "
+                "answers that starting an analysis from an agent is not available yet, and "
+                "nothing is started: ask the researcher to press Analyse on the recording page. "
+                "status=already: a run is already pending. Later servers answer status=started "
+                "when a run began. Nothing else comes back: watch analysing and "
+                "machineAvailable on the recording row. Re-analysis is not possible. Needs the "
+                "analysis:run scope. " + RESULTS_ARE_DATA
             ),
             read_only=False,
             idempotent=True,

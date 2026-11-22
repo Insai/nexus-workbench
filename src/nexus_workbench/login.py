@@ -27,6 +27,7 @@ from .client import (
     Unauthenticated,
     WorkbenchClient,
     WorkbenchError,
+    WriteAccessRequired,
     display_name,
     safe_text,
 )
@@ -37,6 +38,11 @@ MAX_LOCAL_RETRIES = 10
 MAX_PENDING_REPLIES = 10
 DEVICE_NAME_LIMIT = 64
 FALLBACK_DEVICE_NAME = "computer"
+#: Printed when a sign-in asks for a write scope (contract 7.9).
+WRITE_SCOPES_NOTE = (
+    "Write scopes can be approved only in a workspace where Insai has switched agent writes "
+    "on. Elsewhere the approval page refuses them; sign in again without them."
+)
 
 
 class LoginFailed(Exception):
@@ -117,6 +123,12 @@ def sign_in_failure(exc: WorkbenchError) -> LoginFailed:
         return LoginFailed(
             f"Too many sign-in requests to Workbench. Try again in {wait} "
             "with `nexus-workbench login`."
+        )
+    if isinstance(exc, WriteAccessRequired):
+        return LoginFailed(
+            "Workbench refused to approve write scopes: this workspace does not take agent "
+            "writes yet. Ask Insai to switch them on, or sign in without write scopes, for "
+            "example `nexus-workbench login --scope detail`."
         )
     # Token limit, early access, network and the rest already read as one clear sentence.
     return LoginFailed(str(exc))
@@ -255,6 +267,8 @@ def login_with_browser(
         raise sign_in_failure(exc) from None
     url = session["approvalUrl"]
     io.say(f"Asking for scopes: {sc.describe(requested)}")
+    if sc.WRITE & set(requested):
+        io.say(WRITE_SCOPES_NOTE)
     io.say("To sign in, approve this computer in Workbench:")
     io.say(f"  {url}")
     # The URL is printed above, so a browser that does not open is not an error.
