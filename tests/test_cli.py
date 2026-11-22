@@ -740,7 +740,7 @@ def test_whoami_escapes_server_names(api: FakeAPI, capsys) -> None:
     assert cli.main(["whoami"]) == 0
     out = capsys.readouterr().out
     assert "\x1b" not in out and "\x07" not in out and "‮" not in out
-    assert len(out.splitlines()) == 4  # the newline in the name does not add a line
+    assert len(out.splitlines()) == 6  # the newline in the name does not add a line
     assert "Lab" in out and "evil" in out
 
 
@@ -751,7 +751,7 @@ def test_whoami_empty_names_are_unknown(api: FakeAPI, capsys) -> None:
     assert cli.main(["whoami"]) == 0
     lines = capsys.readouterr().out.splitlines()
     assert lines[0].startswith("Workspace: unknown (w_1)")
-    assert lines[2].startswith("Token:     unknown (")
+    assert lines[4].startswith("Token:     unknown (")
 
 
 def test_login_escapes_and_fills_in_names(

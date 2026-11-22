@@ -1,6 +1,7 @@
 """Command line: ``nexus-workbench`` (also installed as ``nexus``).
 
-Exit codes: 0 ok, 1 failure, 2 usage.
+Exit codes: 0 ok, 1 failure, 2 usage. The version 1.1 commands are in
+:mod:`nexus_workbench.commands`.
 
 Error messages name a stable code in brackets, for example ``(not_signed_in)`` (contract
 section 3.3). With ``--json`` an error is printed to stderr as
@@ -10,6 +11,7 @@ section 3.3). With ``--json`` an error is printed to stderr as
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import platform
@@ -22,6 +24,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from . import __version__, auth
+from . import scopes as sc
 from .client import (
     EARLY_ACCESS_URL,
     WorkbenchClient,
@@ -98,11 +101,14 @@ def do_login(
     token_prompt: bool,
     use_keyring: bool,
     cancelled: int = FAILURE,
+    scopes: tuple[str, ...] = (sc.READ,),
 ) -> int:
     """Sign in. ``cancelled`` is returned when no token was given (setup skips the step)."""
     io = LoginIO()
     try:
-        result = run_login(client, io, token_prompt=token_prompt, use_keyring=use_keyring)
+        result = run_login(
+            client, io, token_prompt=token_prompt, use_keyring=use_keyring, scopes=scopes
+        )
     except LoginCancelled as exc:
         _fail(LOGIN_CANCELLED_CODE, str(exc))
         return cancelled
@@ -120,8 +126,23 @@ def do_login(
 
 def cmd_login(args: argparse.Namespace) -> int:
     use_keyring = bool(args.keyring) or auth.keyring_requested()
+    scopes = sc.normalise(args.scope or ())
     with _client() as client:
-        return do_login(client, token_prompt=args.token, use_keyring=use_keyring)
+        return do_login(client, token_prompt=args.token, use_keyring=use_keyring, scopes=scopes)
+
+
+def _remember_scopes(api_base: str, data: dict[str, Any]) -> None:
+    """Save the scopes ``whoami`` reported beside the saved token (contract 7.10)."""
+    token = data.get("token") or {}
+    scopes = data.get("scopes")
+    if not isinstance(token, dict) or not isinstance(token.get("id"), str):
+        return
+    if not isinstance(scopes, list):
+        return
+    # The saved scopes only mirror what the server says, so a file that cannot be changed
+    # is not an error here.
+    with contextlib.suppress(auth.CredentialsError, OSError):
+        auth.save_scopes(api_base, token["id"], [s for s in scopes if isinstance(s, str)])
 
 
 def cmd_logout(args: argparse.Namespace) -> int:
@@ -151,16 +172,27 @@ def cmd_whoami(args: argparse.Namespace) -> int:
         except WorkbenchError as exc:
             _fail_workbench(exc, as_json=args.json)
             return FAILURE
+        _remember_scopes(client.api_base, data)
     if args.json:
         print(json.dumps(data, indent=2))
         return OK
     workspace = data.get("workspace") or {}
     token = data.get("token") or {}
+    scopes = data.get("scopes")
     print(
         f"Workspace: {display_name(workspace.get('name'))} "
         f"({_safe(workspace.get('id')) or 'unknown'})"
     )
     print(f"Role:      {_safe(data.get('role')) or 'unknown'}")
+    print(f"Member:    {_safe(data.get('memberId')) or 'unknown'}")
+    print(
+        "Scopes:    "
+        + (
+            sc.describe(s for s in scopes if isinstance(s, str))
+            if isinstance(scopes, list)
+            else "unknown"
+        )
+    )
     print(f"Token:     {display_name(token.get('name'))} ({_safe(token.get('id')) or 'unknown'})")
     print(f"Expires:   {_safe(token.get('expiresAt')) or 'unknown'}")
     return OK
@@ -380,6 +412,10 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         stored = auth.load_token(api_base)
         if stored.token:
             print(f"Token: from {stored.source} ({stored.masked})")
+            if stored.scopes is not None:
+                print(f"Scopes: {sc.describe(stored.scopes)} (saved with the token)")
+            else:
+                print("Scopes: not saved with the token; the MCP server lists the read tools only")
             token_ok = True
         else:  # signed out is fine: the local tools need no token
             print(
@@ -394,9 +430,18 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         try:
             with _client() as client:
                 data = client.call("whoami")
+                _remember_scopes(client.api_base, data)
             workspace = display_name((data.get("workspace") or {}).get("name"))
             expires = _safe((data.get("token") or {}).get("expiresAt")) or "unknown"
-            print(f"Workbench: signed in to {workspace}, token expires {expires}")
+            server_scopes = data.get("scopes")
+            scope_text = (
+                sc.describe(x for x in server_scopes if isinstance(x, str))
+                if isinstance(server_scopes, list)
+                else "unknown"
+            )
+            print(
+                f"Workbench: signed in to {workspace}, scopes {scope_text}, token expires {expires}"
+            )
         except WorkbenchError as exc:
             print(f"Workbench: {with_code(exc.code, exc.message, exc.hint)}")
             ok = False
@@ -464,11 +509,16 @@ def cmd_mcp(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="nexus-workbench",
-        description=(
+        description=textwrap.fill(
             "Connect Claude Code and Codex to Insai Workbench. Early access. "
-            "For research use only. Not for clinical decision-making."
+            "For research use only. Not for clinical decision-making.",
+            79,
         ),
-        epilog=f"Agent access is in early access: {EARLY_ACCESS_URL}",
+        epilog=(
+            "Exit codes: 0 ok, 1 failure, 2 usage. Errors name a code in brackets.\n"
+            f"Agent access is in early access: {EARLY_ACCESS_URL}"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--version", action="version", version=f"nexus-workbench {__version__}")
     sub = parser.add_subparsers(dest="command", metavar="COMMAND")
@@ -514,7 +564,22 @@ def build_parser() -> argparse.ArgumentParser:
         "sign in to Workbench",
         "Sign in to Workbench. It opens Workbench in your browser: approve this computer there, "
         "then type the code it shows. With --token, paste a token made on the Connect an agent "
-        "page instead. The token is saved only on this computer.",
+        "page instead. The token is saved only on this computer, with its scopes. --scope asks "
+        "for more than reading; the approver may give fewer.",
+        epilog=(
+            "scopes (read is always included):\n"
+            + "".join(f"  {name:<13} {sc.MEANING[name]}\n" for name in sc.ALL)
+            + "\nexamples:\n"
+            "  nexus-workbench login\n"
+            "  nexus-workbench login --scope detail --scope marks:write"
+        ),
+    )
+    p.add_argument(
+        "--scope",
+        action="append",
+        choices=list(sc.ALL),
+        metavar="SCOPE",
+        help="ask for this scope too (repeat for more): " + ", ".join(sc.ALL[1:]),
     )
     p.add_argument(
         "--token",
@@ -535,7 +600,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = add(
         "whoami",
         "show the workspace this sign-in reads",
-        "Show the workspace your token reads, your role, and the token's name and expiry.",
+        "Show the workspace your token reads, your role and member id, the token's scopes, and "
+        "the token's name and expiry. It saves the scopes beside a saved token.",
+        epilog="example:\n  nexus-workbench whoami --json",
     )
     p.add_argument("--json", action="store_true", help="print the raw JSON")
     p.set_defaults(func=cmd_whoami)
@@ -596,6 +663,10 @@ def build_parser() -> argparse.ArgumentParser:
         "need to run it yourself.",
     )
     p.set_defaults(func=cmd_mcp)
+
+    from .commands import add_parsers  # noqa: PLC0415 (it imports this module)
+
+    add_parsers(add)
     return parser
 
 
