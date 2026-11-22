@@ -36,8 +36,8 @@ def front_matter(text: str) -> dict[str, str]:
     return fields
 
 
-def test_ten_skills_and_twenty_two_tools() -> None:
-    assert len(SKILL_DIRS) == 10
+def test_thirteen_skills_and_twenty_two_tools() -> None:
+    assert len(SKILL_DIRS) == 13
     assert len(tool_names()) == 22
 
 

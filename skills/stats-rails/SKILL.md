@@ -26,8 +26,10 @@ Nights of one person are not independent, and epochs of one night are even less 
 1. Get one number per night from the tool (for example `kappa` from `compare_hypnograms`,
    `f1` from `compare_events`, a stage value from `compute_band_power`).
 2. Average nights within each person, so each person counts once. The workspace tools do
-   not return participant codes; the researcher supplies the night-to-person mapping.
-   Recordings sharing a `pairId` are one combined night.
+   not return participant codes. `list_nights` gives an opaque `personKey` when a night's
+   recordings agree on one person (the nights-by-person skill); otherwise the researcher
+   supplies the night-to-person mapping. Recordings sharing a `pairId` are one combined
+   night.
 3. Run the statistics over people. Report the number of people and the number of nights.
 
 Never pool epochs or events across nights and call the pooled count n.
