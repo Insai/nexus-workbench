@@ -51,6 +51,39 @@ To keep your own agent config untouched, set `CLAUDE_CONFIG_DIR`, `CODEX_HOME`,
 `UV_TOOL_DIR`, `UV_TOOL_BIN_DIR` and `NEXUS_WORKBENCH_CONFIG_DIR` to empty folders
 first.
 
+## Try 1.1 on staging
+
+For internal testers. Version 1.1 lives on the `next` branch and talks to the staging
+API, not production. Install it from that branch:
+
+```sh
+uv tool install --force git+https://github.com/Insai/nexus-workbench@next
+```
+
+Point it at staging in the shell you use for the rest of these steps:
+
+```sh
+export NEXUS_API_URL=<staging API URL>
+```
+
+Sign in with the scopes you want to test. Each `--scope` adds one; `read` is always
+included:
+
+```sh
+nexus-workbench login --scope detail --scope marks:write --scope tasks:write
+```
+
+Then register the MCP server without signing in again:
+
+```sh
+nexus-workbench setup --no-login
+```
+
+`setup` saves `NEXUS_API_URL` with the server entry, so your agent talks to staging too.
+Restart the agent session to pick it up. To go back to the released version, run
+`uv tool install --force nexus-workbench`, unset `NEXUS_API_URL`, then run
+`nexus-workbench setup` again.
+
 ## Rules for changes
 
 - **Contract first.** [docs/contract.md](docs/contract.md) is the source of truth for the

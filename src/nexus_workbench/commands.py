@@ -255,9 +255,14 @@ def cmd_events(args: argparse.Namespace) -> int:
     if not data.get("available"):
         print("This recording has no machine events.")
         return cli.OK
+    rows = data.get("events") or []
+    if not rows and not args.cursor and not data.get("nextCursor"):
+        # The kinds can come from counts that are all zero: the analysis found none.
+        what = f"{_safe(args.kind)} events" if args.kind else "events"
+        print(f"No {what} on this recording.")
+        return cli.OK
     kinds = ", ".join(_safe(k) for k in data.get("kinds") or []) or "none"
     print(f"Kinds: {kinds}")
-    rows = data.get("events") or []
     if rows:
         print(
             render(

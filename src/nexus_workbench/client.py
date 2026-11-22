@@ -209,12 +209,15 @@ class ScopeRequired(WorkbenchError):
         scope: str | None = None,
         *args: Any,
         have: tuple[str, ...] | None = None,
+        action: str | None = None,
         **kwargs: Any,
     ) -> None:
         self.scope = scope if scope in sc.ALL else None
         if "message" not in kwargs and not args:
             kwargs["message"] = (
-                sc.CANNOT[self.scope] if self.scope else "This token lacks the scope this needs."
+                sc.cannot(self.scope, action)
+                if self.scope
+                else "This token lacks the scope this needs."
             )
         if "hint" not in kwargs:
             wanted = [*(have or ()), self.scope] if self.scope else list(have or ())
@@ -488,7 +491,9 @@ def error_from_response(
         scope = body.get("scope") if isinstance(body, dict) else None
         if not isinstance(scope, str) and action is not None:
             scope = sc.needed(action)
-        return ScopeRequired(scope if isinstance(scope, str) else None, have=have, status=status)
+        return ScopeRequired(
+            scope if isinstance(scope, str) else None, have=have, action=action, status=status
+        )
     if cls is Forbidden and action in FORBIDDEN_BY_ACTION:
         return Forbidden(FORBIDDEN_BY_ACTION[action], status=status)
     if cls is NotAvailable and action in NOT_AVAILABLE_BY_ACTION:
@@ -643,7 +648,7 @@ class WorkbenchClient:
         """Raise :class:`ScopeRequired` when the known scopes do not cover ``action``."""
         need = sc.needed(action)
         if self._scopes is not None and need not in self._scopes:
-            raise ScopeRequired(need, have=self._scopes)
+            raise ScopeRequired(need, have=self._scopes, action=action)
 
     # -- version 1.1 actions (contract section 7) ------------------------------
 

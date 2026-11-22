@@ -80,6 +80,32 @@ def test_scope_required_is_local_when_the_scopes_are_known(api: FakeAPI) -> None
 
 
 @pytest.mark.parametrize(
+    ("call", "sentence", "scope"),
+    [
+        (lambda cl: cl.get_events("e_1"), "read per-epoch and per-event detail", "detail"),
+        (lambda cl: cl.propose_marks("e_1", [MARK]), "propose marks", "marks:write"),
+        (lambda cl: cl.withdraw_marks("e_1"), "withdraw marks", "marks:write"),
+        (
+            lambda cl: cl.create_review_task(["e_1"], member_id=OTHER, mode="blind"),
+            "give review tasks",
+            "tasks:write",
+        ),
+        (lambda cl: cl.request_analysis("e_4"), "start an analysis", "analysis:run"),
+    ],
+)
+@pytest.mark.parametrize("known", [False, True])
+def test_scope_required_names_the_action(
+    api: FakeAPI, call: Any, sentence: str, scope: str, known: bool
+) -> None:
+    client, _ = make(api, ["read"], known=known)
+    with pytest.raises(c.ScopeRequired) as info:
+        call(client)
+    assert str(info.value) == (
+        f"This token cannot {sentence}. Sign in again with `nexus-workbench login --scope {scope}`."
+    )
+
+
+@pytest.mark.parametrize(
     ("call", "scope"),
     [
         (lambda cl: cl.get_events("e_1"), "detail"),

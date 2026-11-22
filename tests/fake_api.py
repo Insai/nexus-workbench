@@ -197,6 +197,8 @@ class FakeAPI:
     analysis_available: bool = False
     analysis_service_down: bool = False
     too_large: set[str] = field(default_factory=set)  # recordings whose events are over 20 MB
+    # Kinds an analysis lists with a count of 0, by recording, on top of the kinds it found.
+    empty_kinds: dict[str, list[str]] = field(default_factory=dict)
     marks_read: int = MARKS_READ  # annotation rows one list_marks call reads
     audit: list[dict[str, Any]] = field(default_factory=list)
     workspace_audit: list[str] = field(default_factory=list)  # agent_write_off and the like
@@ -613,7 +615,9 @@ class FakeAPI:
         return _ok(
             {
                 "available": True,
-                "kinds": sorted({e["kind"] for e in events}),
+                "kinds": sorted(
+                    {e["kind"] for e in events} | set(self.empty_kinds.get(rec["id"], []))
+                ),
                 "events": out,
                 "nextCursor": nxt,
             }

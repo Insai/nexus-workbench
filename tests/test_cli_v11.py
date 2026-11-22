@@ -183,6 +183,25 @@ def test_nights_and_layers(api: FakeAPI, capsys) -> None:
     assert out[1].split() == ["analysis:ladder-3", "analysis", "stable", "1", "1", "1", "2", "1"]
 
 
+def test_events_with_zero_counts_say_none_on_the_recording(api: FakeAPI, capsys) -> None:
+    sign_in(api)
+    api.events["e_1"] = []
+    api.empty_kinds["e_1"] = ["blink", "drift"]
+    assert cli.main(["events", "e_1"]) == 0
+    out = capsys.readouterr().out
+    assert out == "No events on this recording.\n"
+    assert cli.main(["events", "e_1", "--kind", "blink"]) == 0
+    assert capsys.readouterr().out == "No blink events on this recording.\n"
+    assert cli.main(["events", "e_1", "--json"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data == {
+        "available": True,
+        "kinds": ["blink", "drift"],
+        "events": [],
+        "nextCursor": None,
+    }
+
+
 def test_events_table_and_save(api: FakeAPI, tmp_path: Path, capsys) -> None:
     sign_in(api)
     assert cli.main(["events", "e_1", "--limit", "2"]) == 0

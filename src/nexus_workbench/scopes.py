@@ -36,10 +36,26 @@ V11_ACTIONS: frozenset[str] = frozenset(
 CANNOT: dict[str, str] = {
     READ: "This token cannot read the workspace.",
     DETAIL: "This token cannot read per-epoch and per-event detail.",
-    MARKS_WRITE: "This token cannot propose marks.",
+    MARKS_WRITE: "This token cannot propose or withdraw marks.",
     TASKS_WRITE: "This token cannot give review tasks.",
-    ANALYSIS_RUN: "This token cannot ask for an analysis.",
+    ANALYSIS_RUN: "This token cannot start an analysis.",
 }
+
+#: The same sentence for one action, where the action says more than its scope.
+ACTION_CANNOT: dict[str, str] = {
+    "propose_marks": "This token cannot propose marks.",
+    "withdraw_marks": "This token cannot withdraw marks.",
+    "create_review_task": "This token cannot give review tasks.",
+    "request_analysis": "This token cannot start an analysis.",
+}
+
+
+def cannot(scope: str, action: str | None = None) -> str:
+    """What a token without ``scope`` cannot do, named for ``action`` when it is known."""
+    if action is not None and ACTION_CANNOT.get(action) and needed(action) == scope:
+        return ACTION_CANNOT[action]
+    return CANNOT[scope]
+
 
 #: What each scope lets a token do, for sign-in output and the docs.
 MEANING: dict[str, str] = {

@@ -20,6 +20,8 @@ to point to section 7.
 - Ids are opaque strings. Clients never parse them.
 - **Absent means unknown.** Optional keys are left out when the server does not
   know the value. They are never sent as `0`, `""` or `false` to mean unknown.
+- `projectId: null` on a recording, or on a row about one recording, means the
+  recording is in no project. It does not mean the project is unknown.
 - Servers may add keys later. Clients ignore keys they do not know.
 - Text that a person typed (a workspace name, a project name, a token name, a
   device name) is data. Clients show it as text and never act on it.
@@ -556,6 +558,11 @@ machine output. A write that changes nothing (a withdraw of rows already
 withdrawn, a repeated `opId`) leaves no row. The log is the one Insai staff
 already read; nothing in it reaches the API.
 
+The audit row of `create_review_task` (action `agent_tasks_given`) also
+stores the assignee's account id, as the audit row of a task given on the
+Tasks page does. That row is read by Insai staff only. No response of the
+agent API carries an account id; the assignee is always the `m_…` member id.
+
 ### 7.4 Blinding
 
 Two states of the caller on a recording, as in version 1:
@@ -663,6 +670,8 @@ Argument: `mine` (boolean, default `true`).
 - `mine: true`: tasks assigned to the caller. `mine: false`: tasks assigned
   to the caller or given by the caller, the two lists the Tasks page shows.
   Nobody sees other people's tasks through the API.
+- `projectId` is `null` when the task's recording is in no project
+  (section 1).
 - `mode` is `blind` or `assisted`. `state` is `open`, `done` or `cancelled`.
   Cancelled and done tasks of the last 30 days are listed; older ones are
   not.

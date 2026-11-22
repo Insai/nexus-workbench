@@ -148,7 +148,7 @@ message, not the exact words; the wording can change between versions.
 | "not switched on for this workspace yet" | Agent access is off for this workspace. | See Early access. Stop. |
 | "Agent access is not available on this Workbench server yet" | The server does not offer agent access yet. | Stop and tell the researcher. Local tools still work. |
 | "does not exist in this workspace, or you cannot see it" | The id is not in this workspace, or they may not see it. | Re-list with `list_projects` or `list_recordings`; do not guess ids. |
-| "This token cannot read per-epoch and per-event detail", "This token cannot propose marks", "cannot give review tasks", "cannot ask for an analysis" | The token lacks the scope. The message names the `login` command with the scope. | Tell the researcher the command; they run it in their terminal and restart the session. Do not retry. |
+| "This token cannot read per-epoch and per-event detail", "This token cannot propose marks", "cannot withdraw marks", "cannot give review tasks", "cannot start an analysis" | The token lacks the scope. The message names the `login` command with the scope. | Tell the researcher the command; they run it in their terminal and restart the session. Do not retry. |
 | "This workspace does not take agent writes yet" | `agentWrite` is off for the workspace. | Stop. Insai switches it on. Reads still work. |
 | "Workbench refused to write marks on this recording" | The researcher is held blind on that recording or its night, or no longer reads the workspace. | Stop for that recording. Do not try another way. |
 | "only the person who uploaded the recording can ask for one" | `request_analysis` on someone else's recording. | Tell the researcher; the uploader can ask. |
