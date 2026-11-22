@@ -30,7 +30,9 @@ claude plugin validate . --strict
 The last line needs Claude Code. It checks the plugin and marketplace manifests.
 
 Tests never contact Workbench. The workspace tools are tested against a fake API in
-`tests/fake_api.py`.
+`tests/fake_api.py`, which implements the contract's version 1.1 rules (scopes, switches,
+blinding, caps, `opId`, audit). A change to those rules starts in the contract, then the
+fake, then the client.
 
 ## Test a wheel before a release
 
@@ -54,7 +56,10 @@ first.
 - **Contract first.** [docs/contract.md](docs/contract.md) is the source of truth for the
   Workbench API and the error codes. A change to a request, a reply or a code starts as
   an edit to that file. [docs/tools.md](docs/tools.md) does the same for the local tools.
-- **Read-only.** No tool may change anything in Workbench or on the user's computer.
+- **Writes are scoped and reviewed.** A tool changes Workbench only with a write scope the
+  person chose, and its result is a proposal members review or exactly what the person
+  could do from the page (contract section 7). Read tools stay read-only. A local tool
+  never changes an existing file; `preprocess` writes only a new one.
 - **Privacy.** No tool returns names, paths, EDF header identity fields or raw samples.
   Keep the rules in the README's Privacy section true.
 - **Plain language.** Short sentences. Say what happened and what to do next. No hype

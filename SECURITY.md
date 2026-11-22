@@ -42,8 +42,12 @@ Only the latest release gets security fixes. Update with
 
 ## Tokens
 
-- A token is read-only (`read` scope), belongs to one person and one workspace, and
-  expires after 90 days by default.
+- A token reads (`read` scope) unless the person chose more scopes when it was made
+  (`detail`, `marks:write`, `tasks:write`, `analysis:run`). Scopes never widen later. A
+  token belongs to one person and one workspace, and expires after 90 days by default.
+- Writes need a write scope and the workspace's agent writes switch, which Insai sets.
+  Proposed marks land as a review layer and never change anyone's scoring; every write
+  leaves one row in the workspace's audit log.
 - It is saved in `credentials.json` in your user config folder, with permissions `600`
   (only you can read it) on macOS and Linux. On Windows the file sits in your own
   `%LOCALAPPDATA%` folder. The package refuses a credentials file other users can read.

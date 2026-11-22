@@ -1,7 +1,7 @@
 {
   "name": "nexus-workbench",
   "version": "0.1.0.dev0",
-  "description": "Read-only access to an Insai Workbench workspace (projects and recordings) from Claude Code, plus local tools for EEG files. Early access. For research use only.",
+  "description": "Access to an Insai Workbench workspace from Claude Code: reads by default, and with the scopes you choose, marks proposed for review, review tasks and analyses. Plus local tools for EEG files. Early access. For research use only.",
   "author": {
     "name": "Insai"
   },
