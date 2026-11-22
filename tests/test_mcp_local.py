@@ -15,7 +15,7 @@ from nexus_workbench import mcp_server
 from nexus_workbench.local import api as local_api
 from nexus_workbench.local.sample import make_sample_night
 from tests.fake_api import API_BASE, FakeAPI, sample_data
-from tests.test_mcp_server import LOCAL_TOOLS, WORKSPACE_TOOLS, server_for, text_of
+from tests.test_mcp_server import LOCAL_TOOLS, READ_TOOLS, WORKSPACE_TOOLS, server_for, text_of
 
 
 @pytest.fixture(scope="module")
@@ -48,10 +48,11 @@ def test_local_tools_are_listed_closed_world_with_schemas() -> None:
             return await client.list_tools()
 
     tools = {t.name: t for t in anyio.run(go).tools}
-    assert len(tools) == 9
+    assert len(tools) == 14
     for name in LOCAL_TOOLS:
         tool = tools[name]
-        assert tool.annotations.open_world_hint is False
+        # The comparisons can take one side from the workspace, so they may reach Workbench.
+        assert tool.annotations.open_world_hint is name.startswith("compare_")
         assert tool.annotations.read_only_hint is True
         assert tool.annotations.destructive_hint is False
         assert tool.annotations.idempotent_hint is True
@@ -69,7 +70,14 @@ def test_local_tools_are_listed_closed_world_with_schemas() -> None:
         "seed",
         "tolerance_sec",
         "label",
+        "recording_id",
     }
+    assert "required" not in tools["compare_events"].input_schema  # a side may be the workspace
+    pre = tools["preprocess"]
+    assert pre.annotations.read_only_hint is False
+    assert pre.annotations.destructive_hint is False
+    assert pre.annotations.open_world_hint is False
+    assert pre.input_schema["required"] == ["path"]
     quality = tools["check_signal_quality"].output_schema
     assert set(quality["required"]) >= {"recordingId", "usablePercent", "badSpans"}
 
@@ -287,11 +295,11 @@ def test_every_tool_says_its_contents_are_data() -> None:
             return await client.list_tools()
 
     descriptions = {t.name: t.description for t in anyio.run(go).tools}
-    for name in WORKSPACE_TOOLS:
+    for name in READ_TOOLS:
         assert mcp_server.NAMES_ARE_DATA in descriptions[name], name
-    for name in ("list_projects", "list_recordings"):
+    for name in ("list_projects", "list_recordings", "list_members", "list_tasks", "list_nights"):
         assert "Limited to 10 calls a minute." in descriptions[name], name
-    for name in LOCAL_TOOLS:
+    for name in LOCAL_TOOLS | {"preprocess"}:
         assert mcp_server.FILES_ARE_DATA in descriptions[name], name
 
 
