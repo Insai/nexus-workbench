@@ -115,9 +115,13 @@ Use a write tool only when the researcher asks for that write.
   never become human labels. Only the token can withdraw them, with `withdraw_marks`.
 - A member blinded on the night sees none of the agent's marks.
 - `create_review_task` gives a task exactly as the researcher would from the page, in
-  their name. The member gets the page's one email, which never names the agent.
-- `request_analysis` asks for an analysis exactly as the uploader would. It cannot
-  re-analyse.
+  their name. The member gets the page's one email, which never names the agent, at most
+  one a minute and five an hour; `mailed` says whether this call sent it.
+- `request_analysis` is checked exactly as the uploader's Analyse would be, but for now it
+  starts nothing: it answers that starting an analysis from an agent is not available
+  yet. Ask the researcher to press Analyse on the recording page. It can never re-analyse.
+- Write scopes can be approved at sign-in only where `agentWrite` is on; elsewhere the
+  approval page refuses them and the researcher signs in again without them.
 - Every write that changes something leaves one row in the workspace's audit log,
   attributed to the researcher "via agent" with the token id and counts, never a mark's
   text.
@@ -149,9 +153,12 @@ message, not the exact words; the wording can change between versions.
 | "Workbench refused to write marks on this recording" | The researcher is held blind on that recording or its night, or no longer reads the workspace. | Stop for that recording. Do not try another way. |
 | "only the person who uploaded the recording can ask for one" | `request_analysis` on someone else's recording. | Tell the researcher; the uploader can ask. |
 | "already has machine output" | `request_analysis` on an analysed recording. | Nothing to do. Re-analysis is not something an agent can ask for. |
+| "Starting an analysis from an agent is not available yet" | `request_analysis` passed its checks, but the server cannot start a run for a token yet. Nothing was started. | Ask the researcher to press Analyse on the recording page. Do not retry. |
+| "events are too large to read through the agent API" | `get_events` on a recording whose events are over 20 MB. | Tell the researcher to open the recording in Workbench. Do not retry. |
+| "Workbench refused to approve write scopes" | Sign-in asked for a write scope in a workspace without agent writes. | The researcher signs in again without write scopes, or asks Insai. |
 | "past 5,000 marks on this recording" | The token's layer is full on that recording. Withdrawn rows count. | Nothing was written. Tell the researcher. |
 | "This Workbench server does not offer ... yet" | The server runs agent API version 1; the action is version 1.1. | Stop and tell the researcher. Version 1 tools still work. |
-| "Too many requests to Workbench" | Too many calls. | Wait the number of seconds given (or a minute), then retry once. Each token allows 60 calls a minute in all; `list_projects`, `list_recordings`, `list_members`, `list_tasks`, `list_nights` and `list_layers` allow 10 a minute each; writes 30 a minute together. |
+| "Too many requests to Workbench" | Too many calls. | Wait the number of seconds given (or a minute), then retry once. Each token allows 60 calls a minute in all; `list_projects`, `list_recordings`, `list_members`, `list_tasks`, `list_nights`, `list_layers`, `get_events` and `list_marks` allow 10 a minute each; writes 30 a minute together. |
 | "Could not reach Workbench", "Workbench had a problem answering" | Network or server trouble. | Try once more later. If it persists, ask the researcher to run `nexus-workbench doctor`. |
 | "Workbench took too long to answer" | The server did not answer in time. | Retry once. If it happens again, check the connection. |
 | "Workbench did not accept the request" | An argument was refused, often a stale `cursor` when listing. | Check the arguments. When listing, start the list again without the `cursor`. |

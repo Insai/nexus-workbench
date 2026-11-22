@@ -40,12 +40,16 @@ a review task. It never claims that the marks are right.
 
 1. Find the recordings. `list_recordings` (optionally with `project_id`) and
    `get_recording` for channel positions. Skip a row with `held`: marks cannot be written
-   where the researcher is held blind, and the tool would refuse.
+   where the researcher is held blind, and the tool would refuse. If a recording has no
+   machine output yet (`machineAvailable` and `hasEvents` absent) and the loop needs it,
+   ask the researcher to press Analyse on the recording page. `request_analysis` starts
+   nothing yet: it answers that starting an analysis from an agent is not available.
 2. Analyse locally. For signal problems, `check_signal_quality` on the file; its
    `badSpans` give flat and railed stretches with times. For the researcher's own
    detector, use its output file. Agree thresholds before looking (the prereg skill).
 3. Look at what exists. `list_marks` shows human marks, analysis rows and this token's
-   earlier rows; `list_layers` shows which layers ran. Do not propose a mark the token
+   earlier rows; page until `nextCursor` is null, since a page may hold fewer marks than
+   asked and still go on. `list_layers` shows which layers ran. Do not propose a mark the token
    already proposed. Machine rows are withheld (`hidden`) when the researcher is blinded;
    do not try to infer them.
 4. Build the marks. Each needs `kind` (one of `bad_signal`, `movement`, `electrode_pop`,
@@ -63,6 +67,9 @@ a review task. It never claims that the marks are right.
    Call `create_review_task` with the recording ids, the member id and `mode`: `blind`
    when the reviewer must score without machine output, `assisted` to review the proposals
    on the desk. Note that a member held blind on a night sees none of the agent's marks.
+   `mailed` says whether the member was emailed this time; the email is braked (one a
+   minute, five an hour per member), and the tasks are given either way. Tell the
+   researcher when `mailed` is false so they can let the reviewer know.
 8. Read `refused`. `open_task`, `no_source` and `staged` mean that recording was not
    given; report why. `machine_seen` is not a confirm step: report it, and only if the
    researcher decides, call again with `confirm_machine_seen` true for those recordings.
@@ -93,6 +100,6 @@ Review loop on <n> recordings (<project or ids>).
 Local analysis: <tool and settings, agreed before the run>.
 Proposed: <count per kind> marks on <recording id> as layer <source>; total live <total>.
 Reasons given in text: <one example>.
-Tasks: given to <member id> (<mode>) on <ids>; refused <id>: <code> (<why>).
+Tasks: given to <member id> (<mode>) on <ids>; emailed: <yes or no>; refused <id>: <code> (<why>).
 These marks are proposals. Members review each one; no accuracy is claimed.
 ```

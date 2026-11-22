@@ -460,7 +460,7 @@ scope, and it reads Workbench (so these two tools are marked open-world).
   side is named `workspace:<recording id>:<source>` in `fileIdA` or `fileIdB`.
 - `compare_events(reference_path=..., recording_id=..., label="spindle")`: the side you
   leave out is the recording's machine events, read page by page with `get_events` (at
-  most 50,000 rows). `label` also picks the kind read. An event the workspace lists on
+  most 10,000 rows, the 10 pages a minute `get_events` allows). `label` also picks the kind read. An event the workspace lists on
   several channels is kept once, as `eventCounts` counts it. The workspace side is named
   `workspace:<recording id>:machine`.
 - When blinding withholds the machine output, or there is none, the tool answers with
@@ -668,8 +668,10 @@ offer ... yet".
 The server lists a detail or write tool only when the saved token has its scope (read
 from the credentials file at start, with no call). A call the token's scopes do not cover
 fails with "This token cannot ... Sign in again with `nexus-workbench login --scope ...`.",
-before any request when the scopes were saved with the token. Writes also need the workspace's agent writes
-switch; without it they answer "This workspace does not take agent writes yet."
+before any request when the scopes were saved with the token. A token from `NEXUS_TOKEN`
+has no saved scopes, so with it only the read and local tools are listed. Writes also need
+the workspace's agent writes switch; without it they answer "This workspace does not take
+agent writes yet."
 
 Blinding. On a recording where you are held blind, or where your own desk hides the
 machine, machine output is withheld and the result reads `{"hidden": "blind"}` where it
@@ -743,10 +745,10 @@ Arguments: `project_id` (optional).
 - `origin` is `analysis` or `agent`. An analysis layer's `status` is `experimental`,
   `stable`, `retired` or `unknown`; an agent layer's is `proposed`.
 - Per recording, `state` is `have` (rows exist), `notRun` (ran and wrote nothing) or
-  `missing`; `rows` counts live rows and `counts` is per kind or class. A recording you are
-  held blind on carries only `hidden`.
-- At most 1,000 recordings per layer (the layer's `truncated`), at most 200 layers. 10
-  calls a minute.
+  `missing`; `rows` counts live rows and `counts` is per kind or class. A recording whose
+  machine output is hidden from you (held blind, or a blind desk) carries only `hidden`.
+- Layers are found on the newest 1,000 recordings, and each layer lists those (its
+  `truncated` says more exist). At most 200 layers. 10 calls a minute.
 
 ## get_events
 
@@ -754,7 +756,7 @@ Arguments: `id` (recording, required), `kind` (optional), `cursor` (optional), `
 (1 to 1000, default 500).
 
 ```json
-{"available": true, "kinds": ["arousal", "spindle"], "events": [{"onsetSec": 300.0, "durationSec": 1.0, "kind": "spindle", "channel": 1, "confidence": 0.8}, {"onsetSec": 300.0, "durationSec": 1.0, "kind": "spindle", "channel": 2}], "nextCursor": "942151ee:2"}
+{"available": true, "kinds": ["arousal", "spindle"], "events": [{"onsetSec": 300.0, "durationSec": 1.0, "kind": "spindle", "channel": 1, "confidence": 0.8}, {"onsetSec": 300.0, "durationSec": 1.0, "kind": "spindle", "channel": 2}], "nextCursor": "…"}
 ```
 
 - `onsetSec` and `durationSec` are seconds from the recording start; `channel` is the
@@ -762,7 +764,10 @@ Arguments: `id` (recording, required), `kind` (optional), `cursor` (optional), `
 - One event on several channels is one row per channel, so totals differ from
   `eventCounts`. Sorted by onset, then channel, then kind.
 - `available: false` (no `events`) when there are no machine events. Blinded:
-  `{"hidden": "blind"}`. Page with `cursor` set to `nextCursor`.
+  `{"hidden": "blind"}`. Page with `cursor` set to `nextCursor`. A cursor is signed by the
+  server: pass it back as it came, or it is refused.
+- A recording whose events are over 20 MB is refused with `too_large` ("open it in
+  Workbench"). 10 calls a minute.
 
 ## get_stages
 
@@ -789,13 +794,14 @@ Arguments: `id` (recording, required), `source` (`machine` or `mine`, default `m
 Arguments: `id` (recording, required).
 
 ```json
-{"available": true, "grade": "marginal", "score": 0.71, "epochSec": 30, "perEpoch": "ggggggggggggggggggggmmmmmmbb??", "channels": [{"index": 1, "grade": "good", "score": 0.9, "shares": {"ok": 0.96, "suspect": 0.03, "flat": 0.01, "railed": 0.0}}, {"index": 2, "grade": "bad", "score": 0.3, "shares": {"ok": 0.4, "suspect": 0.2, "flat": 0.4}, "excluded": "flat"}]}
+{"available": true, "grade": "marginal", "score": 0.71, "epochSec": 30, "perEpoch": "ggggggggggggggggggggmmmmmmbb??", "channels": [{"index": 1, "grade": "good", "score": 0.9, "shares": {"ok": 0.96, "suspect": 0.03, "flat": 0.01}}, {"index": 2, "grade": "bad", "score": 0.3, "shares": {"ok": 0.4, "suspect": 0.2, "flat": 0.4}, "excluded": "flat"}]}
 ```
 
 - `perEpoch` holds one letter an epoch: `g` good, `m` marginal, `b` bad, `?` not graded.
-- `shares` are fractions of epochs; when the stored result does not tell flat from railed,
-  `flat` carries both. `excluded` (`flat` or `non_eeg`) says why a channel is left out of
-  the grade.
+- `shares` are fractions of epochs. The current quality job does not tell flat from
+  railed, so `flat` carries both and `railed` is not sent. `excluded` (`flat` or
+  `non_eeg`) says why a channel is left out of the grade. A channel the quality job graded
+  that is not one of the recording's channels is left out.
 - Not blinded. `available: false` when never graded.
 
 ## list_marks
@@ -816,6 +822,8 @@ Arguments: `id` (recording, required), `origin` (`human`, `machine` or `agent`, 
 - Held blind: your own human rows only, and `"hidden": "blind"`. A blind desk: everyone's
   human rows and `"hidden": "blind"`. Asking for a withheld origin gives
   `{"marks": [], "nextCursor": null, "hidden": "blind"}`.
+- A page may hold fewer than `limit` marks and still carry a `nextCursor`: the server reads
+  at most 5,000 stored rows a call. Page until `nextCursor` is `null`. 10 calls a minute.
 
 ## propose_marks
 
@@ -867,11 +875,14 @@ Arguments: `ids` (1 to 100 distinct recording ids, required), `member_id` (requi
 false).
 
 ```json
-{"batchId": "batch_0001", "given": ["e_2"], "refused": [{"id": "e_0", "code": "machine_seen"}]}
+{"batchId": "batch_0001", "given": ["e_2"], "refused": [{"id": "e_0", "code": "machine_seen"}], "mailed": true}
 ```
 
 - The page's "give a task": given by you, to the member, with the page's one email (which
   never names the agent). You may give one to yourself.
+- `mailed` says whether the member was emailed this time. The email is braked per member:
+  at most one a minute and five an hour, and none for tasks you give yourself. The tasks
+  are given either way.
 - `refused` codes: `not_found`, `open_task` (the member has an open task on it), and for
   `blind` only `no_source`, `staged` and `machine_seen`. `machine_seen` is not a confirm
   step: report it, and only if the person decides, send those recordings again with
@@ -883,14 +894,16 @@ false).
 
 Arguments: `id` (recording, required).
 
-```json
-{"status": "started"}
-```
+Not available yet. The server checks the request as Analyse in the recording editor
+would, then answers `not_available` (HTTP 501) and starts nothing, until the analysis
+service accepts a service identity. The tool says "Starting an analysis from an agent is
+not available yet. Use Analyse on the recording page." Ask the person to press Analyse.
 
-- As Analyse in the recording editor: only for a recording you uploaded (or Insai staff),
-  uploaded as a file, with no machine output yet.
-- `started`, or `already` when a run is pending. Re-sending is safe.
-- `already_analysed` (409) when it has machine output; re-analysis is not possible.
+- Checked in this order: the recording exists and you may see it (`not_found`), it has no
+  machine output (`already_analysed`, 409; re-analysis is not possible), no run is pending
+  (`{"status": "already"}`), it was uploaded as a file (`invalid_argument`), and you
+  uploaded it or are Insai staff (`forbidden`).
+- A later server that starts the run answers `{"status": "started"}`. Re-sending is safe.
 - Nothing about the run comes back: the recording row's `analysing` and
   `machineAvailable` show it.
 

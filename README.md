@@ -134,10 +134,12 @@ nexus-workbench login --scope detail --scope marks:write
 | `detail` | Read per-epoch stages and quality, per-event events and marks. | `get_events`, `get_stages`, `get_quality`, `list_marks` |
 | `marks:write` | Propose marks as a review layer, and withdraw them. | `propose_marks`, `withdraw_marks` |
 | `tasks:write` | Give review tasks to members. | `create_review_task` |
-| `analysis:run` | Ask for an analysis of a recording you uploaded. | `request_analysis` |
+| `analysis:run` | Ask for an analysis of a recording you uploaded (not available yet, see below). | `request_analysis` |
 
 The approval page shows the scopes before you approve, and the person approving may give
-fewer. The scopes the token got are saved with it and shown by `whoami` and `doctor`.
+fewer. Write scopes can be approved only in a workspace where Insai has switched agent
+writes on; elsewhere the approval page refuses them, so sign in again without them. The
+scopes the token got are saved with it and shown by `whoami` and `doctor`.
 Scopes never widen: to add one, sign in again. A token pasted with `login --token` keeps
 the scopes it was made with on the page.
 
@@ -166,8 +168,8 @@ scopes are not known without a call, so the server lists the read tools only.
 | `nexus-workbench marks ID` | A recording's marks (`--origin` `human`, `machine` or `agent`; `--limit`, `--cursor`). Needs `detail`. |
 | `nexus-workbench propose ID FILE` | Propose marks from a CSV or JSON file as a review layer. `--dry-run` checks the file and sends nothing. Needs `marks:write`. |
 | `nexus-workbench withdraw ID` | Withdraw marks this token proposed (`--mark ID`, repeat for more; without it all, after a question or `--yes`). Needs `marks:write`. |
-| `nexus-workbench task give IDS` | Give a member review tasks (`--member`, `--mode` `blind` or `assisted`, `--confirm-machine-seen`). Needs `tasks:write`. |
-| `nexus-workbench analyse ID` | Ask for an analysis of a recording you uploaded. Needs `analysis:run`. |
+| `nexus-workbench task give IDS` | Give a member review tasks (`--member`, `--mode` `blind` or `assisted`, `--confirm-machine-seen`). Says whether the member was emailed. Needs `tasks:write`. |
+| `nexus-workbench analyse ID` | Ask for an analysis of a recording you uploaded. Needs `analysis:run`. Not available yet: Workbench checks the request and answers `not_available`; use Analyse on the recording page. |
 | `nexus-workbench preprocess PATH` | Band-pass, notch, resample or pick channels of a local EDF into a new file (`--low`, `--high`, `--notch`, `--resample`, `--channels`, `--out`). No account needed. |
 | `nexus-workbench sample` | Write a synthetic sample night to try the local tools on (`--out`, `--hours`, `--seed`, `--force`). |
 | `nexus-workbench qc PATH` | Describe a local EDF file and check its signal quality in 30 s epochs (`--json` for the raw results). The recording must be 30 s or longer. |
@@ -214,7 +216,8 @@ With `--json`, an error is printed to stderr as one JSON object, and stdout stay
 The codes are listed in [docs/contract.md](docs/contract.md) (sections 3.1, 3.3 and
 7.10). The 1.1 ones: `scope_required` (the token lacks a scope; the message names the
 `login` command), `write_access_required` (the workspace does not take agent writes yet),
-`already_analysed` and `mark_limit`.
+`already_analysed`, `mark_limit`, `too_large` (a recording's events are too large to read
+through the API; open it in Workbench) and `not_available` (`request_analysis`, for now).
 
 ## Tools
 
@@ -259,8 +262,8 @@ agent writes on. See [Writing to Workbench](#writing-to-workbench).
 |---|---|---|
 | `propose_marks` | `marks:write` | Adds up to 500 marks to this token's own review layer on a recording. |
 | `withdraw_marks` | `marks:write` | Withdraws marks this token proposed. |
-| `create_review_task` | `tasks:write` | Gives a member review tasks, as you would from the page. |
-| `request_analysis` | `analysis:run` | Asks for an analysis of a recording you uploaded, as Analyse does. |
+| `create_review_task` | `tasks:write` | Gives a member review tasks, as you would from the page, and says whether the member was emailed. |
+| `request_analysis` | `analysis:run` | Checks a request for an analysis of a recording you uploaded, as Analyse does. Starts nothing yet: it answers that this is not available and to use Analyse on the recording page. |
 
 ### Local tools (no account, no network)
 
@@ -323,10 +326,11 @@ before any outside workspace sees them.
   you are held blind. No write echoes machine output.
 - **Tasks and analyses act as you.** `create_review_task` gives a task exactly as you would
   from the page, in your name; the member gets the page's one email, which never names the
-  agent. `request_analysis` asks for an analysis as the uploader would; it cannot
-  re-analyse.
+  agent, at most one a minute and five an hour. `request_analysis` is checked as the
+  uploader's Analyse would be, but for now starts nothing and answers `not_available`:
+  press Analyse on the recording page. It can never re-analyse.
 - **Audit.** Every write that changes something leaves one row in the workspace's audit
-  log, attributed to you "via agent" with the token id, the recording id and counts. Never
+  log, attributed to you "via agent" with the token id, the recording ids and counts. Never
   a mark's text, a label or machine output.
 - **Retries are safe.** `propose_marks` sends a retry key, so a call sent again within 24
   hours is answered from the first and writes nothing twice.
@@ -354,7 +358,8 @@ from them. `setup` copies them into your agent's skills folder.
 
 ## Privacy
 
-- Read-only unless you ask for more. A token has the `read` scope, and a write needs a
+- Read-only unless you ask for more. Version 1 of the agent API is read-only. Version 1.1
+  adds detail reads and reviewed writes: a token has the `read` scope, and a write needs a
   write scope you chose at sign-in and the workspace's agent writes switch. Writes land as
   proposals that members review (see [Writing to Workbench](#writing-to-workbench)).
 - `list_members` and `list_tasks` name people only by opaque member ids, and
