@@ -20,8 +20,8 @@ a review task. It never claims that the marks are right.
 - Sign-in needs the scopes: `detail` to read, `marks:write` to propose, `tasks:write` to
   give tasks (the connect-workbench skill). If `propose_marks` or `create_review_task` is
   not listed, the token lacks the scope; tell the researcher the `login` command.
-- Agent writes are switched on per workspace by Insai, and are used internally on staging
-  first. If a write answers "does not take agent writes yet", stop.
+- Agent writes are switched on per workspace by Insai staff. If a write answers "does not
+  take agent writes yet", stop.
 
 ## Handling rules
 

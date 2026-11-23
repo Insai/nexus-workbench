@@ -106,7 +106,7 @@ A token carries scopes, chosen when it is made. Ask for the fewest the work need
 ## What writes do
 
 Every write needs a write scope and the workspace's `agentWrite` switch, which Insai staff
-set per workspace, beside agent access. Writes are on staging and used internally first.
+set per workspace, beside agent access.
 Use a write tool only when the researcher asks for that write.
 
 - `propose_marks` adds rows to this token's own review layer (`agent:<token id>`).
@@ -131,8 +131,9 @@ Use a write tool only when the researcher asks for that write.
 Agent access is switched on per workspace. A workspace that is not approved refuses every
 workspace call, even with a valid token, and the Connect an agent page may not let the
 researcher make a token. There is nothing you can change locally to get past this. Tell
-the researcher that their workspace needs agent access, and that the local tools work
-without it in the meantime.
+the researcher that their workspace needs agent access, that they can request it in
+Workbench (account menu, Connect an agent, Request agent access), and that the local tools
+work without it in the meantime.
 
 ## When a workspace tool refuses
 
@@ -145,8 +146,7 @@ message, not the exact words; the wording can change between versions.
 | "Workbench did not accept your token" | Token mistyped, unknown or revoked. | The researcher runs `nexus-workbench login` again. |
 | "Your Workbench token has expired" | The token is past its expiry. | Same as above. Tokens last 90 days by default. |
 | "This token can no longer read the workspace" | They left the workspace, it is closed, or the token is older than their current membership. | Stop. The researcher asks the workspace owner, then makes a new token. |
-| "not switched on for this workspace yet" | Agent access is off for this workspace. | See Early access. Stop. |
-| "Agent access is not available on this Workbench server yet" | The server does not offer agent access yet. | Stop and tell the researcher. Local tools still work. |
+| "Agent access is not on for this workspace yet" | Agent access is off for this workspace. | See Early access. Stop. |
 | "does not exist in this workspace, or you cannot see it" | The id is not in this workspace, or they may not see it. | Re-list with `list_projects` or `list_recordings`; do not guess ids. |
 | "This token cannot read per-epoch and per-event detail", "This token cannot propose marks", "cannot withdraw marks", "cannot give review tasks", "cannot start an analysis" | The token lacks the scope. The message names the `login` command with the scope. | Tell the researcher to run the command it names in their terminal, for example `nexus-workbench login --scope marks:write` (or `--scope tasks:write`, `--scope detail`), then restart the agent session so the new tools load. Do not retry. |
 | "This workspace does not take agent writes yet" | `agentWrite` is off for the workspace. | Stop. Insai switches it on. Reads still work. |

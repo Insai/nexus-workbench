@@ -22,7 +22,9 @@ from . import scopes as sc
 logger = logging.getLogger(__name__)
 
 PRODUCTION_API_BASE = "https://europe-west4-insai-nexus.cloudfunctions.net"
-EARLY_ACCESS_URL = "https://insai.tech/workbench"
+REQUEST_ACCESS_HINT = (
+    "Request it in Workbench: account menu, Connect an agent, Request agent access."
+)
 AGENT_API_PATH = "/workbench_agent_api"
 CLI_LOGIN_PATH = "/workbench_cli_login"
 
@@ -117,10 +119,8 @@ class Forbidden(WorkbenchError):
 
 class EarlyAccessRequired(WorkbenchError):
     code = "early_access_required"
-    default_message = (
-        "Agent access is in early access and is not switched on for this workspace yet."
-    )
-    default_hint = f"Ask for access: {EARLY_ACCESS_URL}"
+    default_message = "Agent access is not on for this workspace yet."
+    default_hint = REQUEST_ACCESS_HINT
 
 
 class NotFound(WorkbenchError):
@@ -240,10 +240,7 @@ class ScopeRequired(WorkbenchError):
 class WriteAccessRequired(WorkbenchError):
     code = "write_access_required"
     default_message = "This workspace does not take agent writes yet."
-    default_hint = (
-        f"Insai switches writes on per workspace; ask for it at {EARLY_ACCESS_URL}. "
-        "Reads still work."
-    )
+    default_hint = "Insai staff switch agent writes on per workspace. Reads still work."
 
 
 class AlreadyAnalysed(WorkbenchError):
@@ -282,7 +279,7 @@ class NotOnServer(InvalidArgument):
         self.action = action
         super().__init__(
             f"This Workbench server does not offer {safe_text(action, 40)} yet.",
-            hint="It is part of agent API version 1.1, which reaches staging first.",
+            hint="It is part of agent API version 1.1, which this server does not run yet.",
             **kwargs,
         )
 
@@ -451,10 +448,7 @@ def error_from_response(
     if status == 404 and login_endpoint:
         return LoginNotAvailable(status=status)
     if status == 404 and not isinstance(code, str):
-        return EarlyAccessRequired(
-            "Agent access is not available on this Workbench server yet (early access).",
-            status=status,
-        )
+        return EarlyAccessRequired(status=status)
     if 300 <= status < 400:
         return UnexpectedResponse(
             "Workbench answered with a redirect, which this client does not follow.",

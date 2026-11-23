@@ -137,7 +137,7 @@ ERROR_CASES = [
     (401, "unauthenticated", c.Unauthenticated, "nexus-workbench login"),
     (401, "token_expired", c.TokenExpired, "expired"),
     (403, "forbidden", c.Forbidden, "workspace owner"),
-    (403, "early_access_required", c.EarlyAccessRequired, c.EARLY_ACCESS_URL),
+    (403, "early_access_required", c.EarlyAccessRequired, c.REQUEST_ACCESS_HINT),
     (404, "not_found", c.NotFound, "does not exist"),
     (405, "invalid_argument", c.InvalidArgument, "did not accept"),
     (409, "token_limit", c.TokenLimit, "limit of 10 tokens"),
@@ -162,8 +162,8 @@ def test_early_access_message_is_exact() -> None:
     with pytest.raises(c.EarlyAccessRequired) as info:
         respond(403, json=body).call("whoami")
     assert str(info.value) == (
-        "Agent access is in early access and is not switched on for this workspace yet. "
-        "Ask for access: https://insai.tech/workbench"
+        "Agent access is not on for this workspace yet. "
+        "Request it in Workbench: account menu, Connect an agent, Request agent access."
     )
 
 
@@ -177,8 +177,8 @@ def test_invalid_argument_includes_server_sentence() -> None:
 def test_404_without_body_is_early_access() -> None:
     with pytest.raises(c.EarlyAccessRequired) as info:
         respond(404, text="<html>Not Found</html>").call("whoami")
-    assert "early access" in str(info.value)
-    assert c.EARLY_ACCESS_URL in str(info.value)
+    assert "Agent access is not on" in str(info.value)
+    assert c.REQUEST_ACCESS_HINT in str(info.value)
 
 
 def test_fake_server_404_is_early_access() -> None:

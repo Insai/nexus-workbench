@@ -121,7 +121,7 @@ def test_login_saves_token_when_early_access_off(
     monkeypatch.setattr("sys.stdin", FakeStdin(token))
     assert cli.main(["login", "--token"]) == 0
     _, err = capsys.readouterr()
-    assert c.EARLY_ACCESS_URL in err
+    assert c.REQUEST_ACCESS_HINT in err
     assert auth.load_token(API_BASE).token == token
 
 
@@ -291,7 +291,7 @@ def assert_failed_cleanly(api: FakeAPI, capsys: pytest.CaptureFixture[str], need
     """The sign-in failed with ``needle`` on stderr, no traceback, and no token shown or saved."""
     captured = capsys.readouterr()
     assert needle in captured.err
-    assert "nexus-workbench login" in captured.err or "insai.tech" in captured.err
+    assert "nexus-workbench login" in captured.err or "Request agent access" in captured.err
     for text in (captured.out, captured.err):
         assert "Traceback" not in text
         assert "does not understand" not in text
@@ -395,8 +395,8 @@ def test_browser_login_early_access_required(
     opened = no_browser(monkeypatch)
     monkeypatch.setattr("builtins.input", approve_on_first_prompt(api, opened))
     assert cli.main(["login"]) == 1
-    err = assert_failed_cleanly(api, capsys, "early access")
-    assert c.EARLY_ACCESS_URL in err
+    err = assert_failed_cleanly(api, capsys, "Agent access is not on")
+    assert c.REQUEST_ACCESS_HINT in err
 
 
 @pytest.mark.parametrize("action", ["start", "exchange"])

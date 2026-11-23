@@ -13,8 +13,9 @@ to the Workbench API over HTTPS. There is no telemetry.
 A token reads, and nothing more, unless you ask for more scopes when you sign in. See
 [Writing to Workbench](#writing-to-workbench).
 
-**Early access.** Agent access to a workspace is switched on per workspace. Ask for it
-at <https://insai.tech/workbench>. The local tools work without it.
+**Early access.** Agent access is switched on per workspace. Request it in Workbench:
+open the account menu, choose Connect an agent, then Request agent access. The local tools
+work without it.
 
 For research use only. Not for clinical decision-making.
 
@@ -222,9 +223,9 @@ through the API; open it in Workbench) and `not_available` (`request_analysis`, 
 ## Tools
 
 Agent API version 1.1 (the detail and write tools, and the read tools `list_members`,
-`list_tasks`, `list_nights` and `list_layers`) is on staging and used internally first.
-Against a server that does not offer them yet, they answer "This Workbench server does not
-offer ... yet". Inputs, outputs and examples for every tool are in
+`list_tasks`, `list_nights` and `list_layers`) ships with this release. Against an older
+server that does not offer them, they answer "This Workbench server does not offer ...
+yet". Inputs, outputs and examples for every tool are in
 [docs/tools.md](docs/tools.md).
 
 ### Read tools (need sign-in)
@@ -307,8 +308,8 @@ In Claude Code or Codex, ask for example:
 
 ## Writing to Workbench
 
-Writes are version 1.1 of the agent API. They are on staging and used internally first,
-before any outside workspace sees them.
+Writes are version 1.1 of the agent API. They work only in a workspace where Insai staff
+have switched on agent writes.
 
 - **Two switches.** A workspace needs agent access for any call and agent writes
   (`agentWrite`) for any write. Insai staff set both, per workspace. With writes off, a
@@ -440,10 +441,10 @@ example `nexus-workbench login --scope detail`), then restart Claude Code or Cod
 **"This workspace does not take agent writes yet."** Writes are switched on per workspace
 by Insai. Reads keep working.
 
-**"Agent access is in early access and is not switched on for this workspace yet."**
-Your token works, but your workspace does not have agent access yet. Nothing on your
-computer can change that. Ask for access at <https://insai.tech/workbench>. The local
-tools work in the meantime.
+**"Agent access is not on for this workspace yet."** Your token works, but your workspace
+does not have agent access yet. Nothing on your computer can change that. Request it in
+Workbench: open the account menu, choose Connect an agent, then Request agent access.
+Insai emails you when it is switched on. The local tools work in the meantime.
 
 **`uvx: command not found`.** Install uv. On macOS and Linux:
 

@@ -7,8 +7,8 @@ Version 1 (sections 1 to 6) is read-only: no version 1 action changes
 Workbench data.
 
 Version 1.1 (section 7, 22 November 2026) adds scopes, per-epoch and per-event
-reads, and reviewed writes that land as a review layer. It ships to staging
-first and is used internally before any outside workspace sees it. Section 7
+reads, and reviewed writes that land as a review layer. It ships with
+nexus-workbench 0.2.0. Section 7
 describes what the 1.1 server does. A version 1 client keeps working unchanged
 against a version 1.1 server; the few lines of sections 1 to 6 that 1.1 adds
 to point to section 7.
@@ -80,7 +80,7 @@ Content-Type: application/json
 | 401 | `unauthenticated` | No token, a malformed token, an unknown token or a revoked token. The four cases are not told apart. |
 | 401 | `token_expired` | The token is known and past its expiry. |
 | 403 | `forbidden` | The person is no longer a member of the workspace, the workspace is closed, or the token predates the person's current membership. |
-| 403 | `early_access_required` | Agent access is not switched on for this workspace. |
+| 403 | `early_access_required` | Agent access is not switched on for this workspace. The client says: "Agent access is not on for this workspace yet. Request it in Workbench: account menu, Connect an agent, Request agent access." (section 7.11) |
 | 404 | `not_found` | The recording or project does not exist in this workspace, or the caller may not see it. The two cases are not told apart. |
 | 405 | `invalid_argument` | Any method other than POST. |
 | 429 | `rate_limited` | Too many calls. The response carries a `Retry-After` header in whole seconds. |
@@ -421,10 +421,11 @@ Rules for all of them:
   workspace (`get_stages`, `get_events`); then they need a sign-in with the
   `detail` scope. Every other local tool needs no account and no network.
 
-## 7. Version 1.1 (staging, internal first)
+## 7. Version 1.1 (ships with 0.2.0)
 
-Everything in this section is version 1.1. It is built on staging and used by
-Insai's own agents before any outside workspace sees it.
+Everything in this section is version 1.1. It ships with nexus-workbench 0.2.0.
+Reads work in every workspace with agent access. Writes work only in a
+workspace where Insai staff have switched on agent writes (section 7.2).
 
 A server answers an action it does not know with 400 `invalid_argument` and
 the message `Unknown action.`; there is no code of its own for it. The check
@@ -1183,7 +1184,30 @@ A client treats 400 `invalid_argument` with the message `Unknown action.`, on
 an action of this section, as "this server is too old" and says the action is
 not offered by this server yet.
 
-### 7.11 Still later
+### 7.11 Requesting agent access
+
+The Workbench page lets a member ask Insai to switch on agent access for a
+workspace. These are page-only actions of `workbench_agent_token` (section 4),
+called as the signed-in person; no client calls them. They are documented here
+for completeness. Everything else in section 4 holds.
+
+| Action | Arguments | Returns |
+|---|---|---|
+| `request_access` | `wid`, `note` (optional) | `{"request": {"status": "pending", "requestedAt": "…", "note": "…"}}`, or `{"request": null, "agentAccess": true}` when access is already on. |
+| `cancel_request` | `wid` | Withdraws the caller's own pending request. |
+| `decline_request` | `wid` | Insai staff only; anyone else gets `forbidden`. Declines a pending request. |
+| `set_access` | `on` (boolean) | As in section 4. `on: true` also approves every pending request for the workspace and emails each person who asked. |
+| `list` | none | As in sections 4 and 7.8, plus the caller's own `request` (`null` when there is none). Insai staff also see the workspace's pending `requests`. |
+
+The terminal sign-in `get` (section 5.2) adds `requested` (boolean) to each
+`workspaces` row: whether the person has a pending request for that
+workspace. The approval page uses it to offer the request where access is off.
+
+When a call is refused with `early_access_required`, the client says:
+"Agent access is not on for this workspace yet. Request it in Workbench:
+account menu, Connect an agent, Request agent access."
+
+### 7.12 Still later
 
 Signal download; a `personKey` on recording rows; reading another person's
 scoring; editing or re-labelling an existing mark; re-analysis; a staff

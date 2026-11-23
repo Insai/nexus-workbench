@@ -26,7 +26,7 @@ from typing import Any
 from . import __version__, auth
 from . import scopes as sc
 from .client import (
-    EARLY_ACCESS_URL,
+    REQUEST_ACCESS_HINT,
     WorkbenchClient,
     WorkbenchError,
     display_name,
@@ -516,7 +516,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
         epilog=(
             "Exit codes: 0 ok, 1 failure, 2 usage. Errors name a code in brackets.\n"
-            f"Agent access is in early access: {EARLY_ACCESS_URL}"
+            "Agent access is switched on per workspace. " + REQUEST_ACCESS_HINT
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )

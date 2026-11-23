@@ -342,7 +342,7 @@ def test_client_errors_become_tool_errors(api: FakeAPI) -> None:
     result = run(go)
     assert result.is_error is True
     text = text_of(result)
-    assert "early access" in text and c.EARLY_ACCESS_URL in text
+    assert "Agent access is not on" in text and c.REQUEST_ACCESS_HINT in text
     assert "Traceback" not in text
 
 

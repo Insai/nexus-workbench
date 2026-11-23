@@ -666,8 +666,8 @@ Quality across recordings. `list_recordings` rows already carry `qualityGrade` a
 `qualityScore` when the recording was graded, so answer "which recordings are poor" from
 the rows. Call `get_quality` only for per-epoch or per-channel detail on one recording.
 
-Everything below is agent API version 1.1. It is on staging and used internally first.
-Against a version 1 server each of these tools answers "This Workbench server does not
+Everything below is agent API version 1.1, which ships with nexus-workbench 0.2.0.
+Writes work only where Insai staff have switched on agent writes. Against a version 1 server each of these tools answers "This Workbench server does not
 offer ... yet".
 
 | Tool | Scope | readOnly | destructive | idempotent |

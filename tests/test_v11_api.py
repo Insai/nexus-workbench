@@ -168,7 +168,7 @@ def test_version_1_server_reads_as_not_available_yet(api: FakeAPI) -> None:
     assert info.value.code == "invalid_argument"
     assert str(info.value) == (
         "This Workbench server does not offer list_nights yet. "
-        "It is part of agent API version 1.1, which reaches staging first."
+        "It is part of agent API version 1.1, which this server does not run yet."
     )
     assert client.call("whoami")["workspace"]["id"] == "w_1"  # version 1 keeps working
 
