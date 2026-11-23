@@ -12,7 +12,7 @@ from nexus_workbench import channels as chan
 from nexus_workbench import cli
 from nexus_workbench import client as c
 from tests.fake_api import API_BASE, make_token
-from tests.fake_channels import RECORDING, ChannelState, respond
+from tests.fake_channels import LABEL, RECORDING, TWIN_LABEL, TWINS, ChannelState, respond
 
 FRONTAL_ON_ET = ["--port", "Ec1=M1", "--port", "Ec2=M2", "--port", "Et1=AF7", "--port", "Et2=AF8"]
 
@@ -126,6 +126,58 @@ def test_show_server_unable(
 def test_show_unknown_recording(st: ChannelState, capsys: pytest.CaptureFixture[str]) -> None:
     code, _, err = run(capsys, "show", "e_nope")
     assert code == 1 and "(not_found)" in err
+
+
+# -- label or id -----------------------------------------------------------------------------
+
+
+def test_hex_is_an_id_anything_else_a_label() -> None:
+    assert chan.recording_ref(RECORDING) == {"id": RECORDING}
+    assert chan.recording_ref(" night-08 ") == {"label": "night-08"}
+    assert chan.recording_ref(RECORDING[:-1]) == {"label": RECORDING[:-1]}
+    assert chan.recording_ref("e_old", by_id=True) == {"id": "e_old"}
+    with pytest.raises(chan.UsageError):
+        chan.recording_ref(" ")
+
+
+def test_show_by_label(st: ChannelState, capsys: pytest.CaptureFixture[str]) -> None:
+    code, out, _ = run(capsys, "show", LABEL)
+    assert code == 0 and f"Recording: {LABEL}" in out
+    assert st.calls[-1] == {"action": "get_channels", "label": LABEL}
+
+
+def test_set_by_label(st: ChannelState, capsys: pytest.CaptureFixture[str]) -> None:
+    code, out, _ = run(capsys, "set", LABEL, "--preset", "frontal_on_et", "--checked")
+    assert code == 0
+    assert [b.get("label") for b in st.calls] == [LABEL, LABEL]
+    assert all("id" not in b for b in st.calls)
+    assert f"undo: nexus-workbench channels clear {LABEL} --expected-version 1" in out
+
+
+def test_unknown_label(st: ChannelState, capsys: pytest.CaptureFixture[str]) -> None:
+    code, _, err = run(capsys, "show", "night-99")
+    assert code == 1 and "(not_found)" in err and "case-sensitive" in err
+
+
+def test_ambiguous_label_lists_the_ids(
+    st: ChannelState, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code, _, err = run(capsys, "set", TWIN_LABEL, *FRONTAL_ON_ET, "--checked")
+    assert code == 2 and "(ambiguous_label)" in err
+    assert all(i in err for i in TWINS) and "one of these ids" in err
+    assert sets(st) == []
+
+
+def test_ambiguous_label_json(st: ChannelState, capsys: pytest.CaptureFixture[str]) -> None:
+    code, _, err = run(capsys, "show", TWIN_LABEL, "--json")
+    data = json.loads(err)
+    assert code == 2 and data["error"]["code"] == "ambiguous_label"
+    assert data["candidates"] == TWINS
+
+
+def test_id_flag_forces_an_id(st: ChannelState, capsys: pytest.CaptureFixture[str]) -> None:
+    code, _, _ = run(capsys, "show", "e_old", "--id")
+    assert code == 1 and st.calls[-1] == {"action": "get_channels", "id": "e_old"}
 
 
 # -- set --------------------------------------------------------------------------------------

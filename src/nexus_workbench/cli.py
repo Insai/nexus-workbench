@@ -264,6 +264,8 @@ def _channels_fail(exc: WorkbenchError, *, as_json: bool) -> int:
         _err(with_code(code, exc.message, fix))
         if code == "changed" and chan.changed_detail(extra):
             _err(chan.changed_detail(extra))
+        if code == "ambiguous_label" and chan.candidates_detail(extra):
+            _err(chan.candidates_detail(extra))
     return chan.exit_code(code)
 
 
@@ -278,12 +280,16 @@ def cmd_channels(args: argparse.Namespace) -> int:
         overrides = chan.parse_ports(getattr(args, "port", None))
     except chan.UsageError as exc:
         return _channels_usage(str(exc), as_json=args.json)
+    try:
+        ref = chan.recording_ref(rec, by_id=bool(getattr(args, "by_id", False)))
+    except chan.UsageError as exc:
+        return _channels_usage(str(exc), as_json=args.json)
     expected = getattr(args, "expected_version", None)
     if expected is not None and expected < 0:
         return _channels_usage("--expected-version must be 0 or more.", as_json=args.json)
     with _client() as client:
         try:
-            current = client.call("get_channels", id=rec)
+            current = client.call("get_channels", **ref)
             if args.channels_cmd == "show":
                 result = current
             else:
@@ -300,7 +306,7 @@ def cmd_channels(args: argparse.Namespace) -> int:
                     checked = bool(args.checked)
                 result = client.call(
                     "set_channels",
-                    id=rec,
+                    **ref,
                     expectedVersion=current.get("version", 0) if expected is None else expected,
                     ports=ports,
                     checked=checked,
@@ -314,7 +320,10 @@ def cmd_channels(args: argparse.Namespace) -> int:
     elif args.channels_cmd == "show":
         print(chan.format_show(rec, result))
     else:
-        print(chan.format_set(rec, result, command="nexus-workbench"))
+        text = chan.format_set(rec, result, command="nexus-workbench")
+        if "id" in ref and not chan.ID_RE.fullmatch(ref["id"]):
+            text = text.replace("--expected-version", "--id --expected-version")
+        print(text)
     return OK
 
 
@@ -650,9 +659,13 @@ def build_parser() -> argparse.ArgumentParser:
     csub = p.add_subparsers(
         dest="channels_cmd", metavar="ACTION", required=True, help="show, set or clear"
     )
-    rec_help = "the recording id (from `nexus-workbench recordings`)"
+    rec_help = (
+        "the recording's label as members see it (e.g. a night label), or its id "
+        "(24 hex characters)"
+    )
     cs = csub.add_parser("show", help="the sites, app labels, check, device and version")
     cs.add_argument("recording", help=rec_help)
+    cs.add_argument("--id", dest="by_id", action="store_true", help="read the recording as an id")
     cs.add_argument("--json", action="store_true", help="print the raw JSON")
     cs.set_defaults(func=cmd_channels)
     cset = csub.add_parser(
@@ -665,6 +678,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     cset.add_argument("recording", help=rec_help)
+    cset.add_argument("--id", dest="by_id", action="store_true", help="read the recording as an id")
     cset.add_argument(
         "--port",
         action="append",
@@ -689,6 +703,7 @@ def build_parser() -> argparse.ArgumentParser:
     cset.set_defaults(func=cmd_channels)
     cc = csub.add_parser("clear", help="remove the sites set on a recording")
     cc.add_argument("recording", help=rec_help)
+    cc.add_argument("--id", dest="by_id", action="store_true", help="read the recording as an id")
     cc.add_argument(
         "--expected-version",
         "--expect-version",

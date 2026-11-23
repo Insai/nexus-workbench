@@ -10,6 +10,8 @@ code is printed), 4 sign-in, token scope or workspace access.
 
 from __future__ import annotations
 
+import re
+import shlex
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -20,6 +22,8 @@ PORTS = ("Ec1", "Et1", "Ec2", "Et2")
 _PORT_BY_FOLD = {p.lower(): p for p in PORTS}
 
 REFUSED, AUTH = 3, 4
+#: An entry id as the agent API takes it; any other recording argument is a label.
+ID_RE = re.compile(r"^[0-9a-fA-F]{24}$")
 
 #: The server's refusal codes (contract 7.12) and what a person can do about each.
 REFUSAL_FIXES: dict[str, str] = {
@@ -42,6 +46,12 @@ REFUSAL_FIXES: dict[str, str] = {
     "incomplete": "Place all four ports, or save with --unchecked.",
     "not_available": "Channel sites are not switched on for this Workbench server yet.",
     "unavailable": "Workbench could not read the recording's file header. Try again in a minute.",
+}
+#: Codes about naming the recording, not about the change.
+LOOKUP_FIXES: dict[str, str] = {
+    "not_found": "Check the label (exact and case-sensitive, as members see it in Workbench) or "
+    "pass the recording's id.",
+    "ambiguous_label": "Run again with one of these ids in place of the label.",
 }
 #: Sign-in, scope and workspace switch codes: exit 4.
 AUTH_CODES = frozenset(
@@ -69,7 +79,17 @@ class UsageError(ValueError):
     """A command line that cannot be sent. The message says what to type instead."""
 
 
+def recording_ref(recording: str, *, by_id: bool = False) -> dict[str, str]:
+    """``{"id": ...}`` for 24 hex characters (or ``--id``), else ``{"label": ...}``."""
+    text = recording.strip()
+    if not text:
+        raise UsageError("Name the recording by its label or its id.")
+    return {"id": text} if by_id or ID_RE.fullmatch(text) else {"label": text}
+
+
 def exit_code(code: str) -> int:
+    if code == "ambiguous_label":
+        return 2
     if code in AUTH_CODES:
         return AUTH
     if code in REFUSAL_FIXES and code not in NOT_REFUSAL:
@@ -78,7 +98,7 @@ def exit_code(code: str) -> int:
 
 
 def fix_for(code: str) -> str:
-    return AUTH_FIXES.get(code) or REFUSAL_FIXES.get(code, "")
+    return AUTH_FIXES.get(code) or REFUSAL_FIXES.get(code) or LOOKUP_FIXES.get(code, "")
 
 
 # ---------------------------------------------------------------------------
@@ -206,7 +226,7 @@ def undo_command(
 ) -> str:
     """The command that puts the previous sites back. ``set`` keeps ports it is not given, so
     a port placed now but not before is named empty, and an empty unchecked state is ``clear``."""
-    rec = _safe(recording)
+    rec = shlex.quote(_safe(recording))
     if not prev_ports and not prev.get("checked"):
         return f"{command} channels clear {rec}"
     flags = [
@@ -240,6 +260,12 @@ def format_set(recording: str, data: Mapping[str, Any], *, command: str) -> str:
             f"--expected-version {version}"
         )
     return "\n".join(lines)
+
+
+def candidates_detail(extra: Mapping[str, Any]) -> str:
+    """The line printed under an ``ambiguous_label`` refusal: the ids to pick from."""
+    ids = [_safe(i, 64) for i in extra.get("candidates") or []]
+    return f"Candidates: {', '.join(ids)}" if ids else ""
 
 
 def changed_detail(extra: Mapping[str, Any]) -> str:

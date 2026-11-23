@@ -126,9 +126,9 @@ Signed out, the local tools work and need no account. The workspace tools answer
 | `nexus-workbench logout` | Remove the saved token from this computer. |
 | `nexus-workbench whoami` | Show the workspace your token reads. |
 | `nexus-workbench recordings` | List recordings (`--project`, `--limit`, `--cursor`, `--json`). |
-| `nexus-workbench channels show ID` | The electrode site each channel records, its label in the app, whether the sites are checked, whether the device fixes them, and the version (`--json`). |
-| `nexus-workbench channels set ID` | Set a headband's four port sites: `--port Ec1=M1` (repeat) or `--preset frontal_on_et`, then `--checked` or `--unchecked`; `--expected-version N`. Needs a token with `channels:write`. Prints the old and new sites and the command that undoes it. |
-| `nexus-workbench channels clear ID` | Remove the sites set on a recording. |
+| `nexus-workbench channels show REC` | `REC` is the recording's label as members see it (exact, case-sensitive) or its id (24 hex characters; `--id` forces an id). The electrode site each channel records, its label in the app, whether the sites are checked, whether the device fixes them, and the version (`--json`). |
+| `nexus-workbench channels set REC` | Set a headband's four port sites: `--port Ec1=M1` (repeat) or `--preset frontal_on_et`, then `--checked` or `--unchecked`; `--expected-version N`. Needs a token with `channels:write`. Prints the old and new sites and the command that undoes it. |
+| `nexus-workbench channels clear REC` | Remove the sites set on a recording. |
 | `nexus-workbench sample` | Write a synthetic sample night to try the local tools on (`--out`, `--hours`, `--seed`, `--force`). |
 | `nexus-workbench qc PATH` | Describe a local EDF file and check its signal quality in 30 s epochs (`--json` for the raw results). The recording must be 30 s or longer. |
 | `nexus-workbench doctor` | Check the install, the sign-in and the agent registrations. Being signed out is not a failure. |

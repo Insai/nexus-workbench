@@ -1081,14 +1081,19 @@ otherwise both actions answer 501 `not_available`.
 
 | Action | Scope | Input | Output keys |
 |---|---|---|---|
-| `get_channels` | `read` | `id` | `effective`, `ports`, `checked`, `version`, `permissions`, `presets`, `contractRevision` |
-| `set_channels` | `channels:write` (a write scope: needs `agentWrite`) | `id`, `expectedVersion`, `ports` (`{}` clears), `checked` | `version`, `ports`, `checked`, `effective`, `prev`, `unchanged` |
+| `get_channels` | `read` | `id` or `label` | `effective`, `ports`, `checked`, `version`, `permissions`, `presets`, `contractRevision` |
+| `set_channels` | `channels:write` (a write scope: needs `agentWrite`) | `id` or `label`, `expectedVersion`, `ports` (`{}` clears), `checked` | `version`, `ports`, `checked`, `effective`, `prev`, `unchanged` |
 
 - Ports are `Ec1`, `Et1`, `Ec2`, `Et2` (firmware order), case-blind on
   input. A value is a 10-10 site (`Fp1`, `AF7`, ...), a mastoid (`M1`,
   `M2`) or an in-ear site; the server spells it. A missing port is not placed.
 - `expectedVersion` is the `version` from `get_channels` (0 when none was
   ever set). The token's owner is the actor, under the desk's own policy.
+- `label` names the recording as members see it (trimmed, case-sensitive, 1 to 200
+  characters) in the token's workspace; never with `id` (400). No match is 404
+  `not_found`; several are 409 `ambiguous_label` with top-level `candidates`
+  (ids, sorted, at most 20). The client sends 24 hex characters as `id`, anything
+  else as `label`, and exits 2 on `ambiguous_label`, printing the candidates.
 - A label that is not a standard electrode or sensor name reads `chN`.
 
 Refusals (`{"error": {"code", "message"}}`):
@@ -1099,6 +1104,7 @@ Refusals (`{"error": {"code", "message"}}`):
 | 400 | `bad_port`, `bad_site`, `duplicate_site`, `invalid_argument` |
 | 409 | `changed` (with top-level `current: {version, ports, checked}`), `fixed_device`, `combined`, `device_crossed`, `no_source_key`, `header_unparsed`, `incomplete` |
 | 404 | `not_found` |
+| 409 | `ambiguous_label` (with top-level `candidates`) |
 | 503 | `unavailable` (the file header could not be read) |
 | 501 | `not_available` |
 

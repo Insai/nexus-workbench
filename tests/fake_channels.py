@@ -22,7 +22,11 @@ PRESETS = [
         ("frontal_on_et", "Frontal + mastoids (frontal on Et)", ("M1", "M2", "AF7", "AF8")),
     )
 ]
-RECORDING = "e_din1"
+RECORDING = "0123456789abcdef01234567"  # an entry id: 24 hex
+LABEL = "night-08"  # the recording's label as members see it
+#: A label two recordings carry (ambiguous), with their ids.
+TWIN_LABEL = "night-09"
+TWINS = ["aaaaaaaaaaaaaaaaaaaaaaa1", "aaaaaaaaaaaaaaaaaaaaaaa2"]
 DENIED = {"held", "insai_checked", "checked_needs_insai"}
 INVALID = {"bad_port", "bad_site", "duplicate_site"}
 
@@ -105,6 +109,23 @@ def _state(st: ChannelState) -> dict[str, Any]:
     return {"version": st.version, "ports": dict(st.ports), "checked": st.checked}
 
 
+def _find(body: dict[str, Any]) -> tuple[int, dict[str, Any]] | None:
+    """The server's by-id / by-label lookup: None when the body names :data:`RECORDING`."""
+    if "id" in body and "label" in body:
+        return _error(400, "invalid_argument", "Give 'id' or 'label', not both.")
+    if "label" in body:
+        label = str(body["label"]).strip()
+        if label == TWIN_LABEL:
+            return _error(
+                409,
+                "ambiguous_label",
+                "2 recordings carry this label. Name one by 'id'.",
+                candidates=TWINS,
+            )
+        return None if label == LABEL else _error(404, "not_found", "Not found.")
+    return None if body.get("id") == RECORDING else _error(404, "not_found", "Not found.")
+
+
 def respond(st: ChannelState, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     """The fake server's answer to one authenticated agent API call."""
     st.calls.append(body)
@@ -125,8 +146,9 @@ def respond(st: ChannelState, body: dict[str, Any]) -> tuple[int, dict[str, Any]
         return _error(501, "not_available", "Channel sites are not enabled here.")
     if action == "set_channels":
         return _set(st, body)
-    if body.get("id") != RECORDING:
-        return _error(404, "not_found", "Not found.")
+    missing = _find(body)
+    if missing is not None:
+        return missing
     if st.header_unreadable:
         return _error(503, "unavailable", "The file header could not be read.")
     return 200, {
@@ -163,8 +185,9 @@ def _set(st: ChannelState, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         if site in ports.values():
             return _error(400, "duplicate_site", f"{site} is on two ports.")
         ports[port] = site
-    if body.get("id") != RECORDING:
-        return _error(404, "not_found", "Not found.")
+    missing = _find(body)
+    if missing is not None:
+        return missing
     if st.race:
         st.version += 1
         st.ports = {"Ec1": "Fp1", "Ec2": "Fp2", "Et1": "AF7", "Et2": "AF8"}

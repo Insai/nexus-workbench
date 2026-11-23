@@ -237,6 +237,7 @@ PASSTHROUGH_CODES = frozenset(
         "no_source_key",
         "header_unparsed",
         "incomplete",
+        "ambiguous_label",
     }
 )
 
