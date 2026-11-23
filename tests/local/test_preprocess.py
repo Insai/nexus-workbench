@@ -9,6 +9,7 @@ from typing import Any
 
 import numpy as np
 import pytest
+from scipy.signal import butter, sosfiltfilt
 
 from nexus_workbench.local import LocalToolError, api
 from nexus_workbench.local.edf import EdfFile, OutSignal, write_edf
@@ -152,6 +153,7 @@ def test_the_documented_command_works_on_the_sample_night(copy: Path) -> None:
     assert result["applied"] == ["bandpass"]  # the notch ran on no channel
     assert result["filters"]["notchHz"] == 50  # what was asked
     assert [c["filtered"] for c in result["channels"]] == [True] * 4
+    assert [c["clippedSamples"] for c in result["channels"]] == [0] * 4
     labels = [c["label"] for c in result["channels"]]
     assert result["notes"] == [
         f"notch 50 Hz skipped on {label}: at or above half its 100 Hz sample rate"
@@ -229,3 +231,55 @@ def test_non_voltage_channels_are_copied_unfiltered(tmp_path: Path) -> None:
     y, _ = signal(path.with_name("mixed_preprocessed.edf"), 1)
     x, _ = signal(path, 1)
     assert np.allclose(x, y)  # copied as it was
+
+
+def test_filtering_past_the_range_widens_it_instead_of_clipping(tmp_path: Path) -> None:
+    """A low-pass rings at each step of a +-490 uV square wave, past the +-500 uV input
+    range. The output range widens to hold it; nothing is cut."""
+    t = np.arange(FS * 120) / FS
+    square = np.where(np.sin(2 * np.pi * 0.05 * t) >= 0, 490.0, -490.0)
+    small = 20 * np.sin(2 * np.pi * 10 * t)
+    spo2 = 95 + 2 * np.sin(2 * np.pi * 0.1 * t)
+    path = tmp_path / "steps.edf"
+    write_edf(
+        path,
+        [
+            OutSignal("E1-M2", square, FS, "uV", -500, 500),
+            OutSignal("C3-M2", small, FS, "uV", -500, 500),
+            OutSignal("SpO2", spo2, FS, "%", 0, 100, dig_min=0, dig_max=1000),
+        ],
+    )
+    result = api.preprocess(str(path), high_hz=5)
+    assert [c["clippedSamples"] for c in result["channels"]] == [0, 0, 0]
+    out = path.with_name("steps_preprocessed.edf")
+    edf = EdfFile(str(out))
+    h = edf.header
+    # The square wave's channel: wider than the data, full 16-bit digital range.
+    x, _ = signal(path, 0)
+    expected = sosfiltfilt(butter(4, 5, btype="lowpass", fs=FS, output="sos"), x)
+    assert expected.max() > 500 and expected.min() < -500
+    assert h.phys_min[0] < expected.min() and h.phys_max[0] > expected.max()
+    assert (h.dig_min[0], h.dig_max[0]) == (-32768, 32767)
+    y, _ = signal(out, 0)
+    step = (h.phys_max[0] - h.phys_min[0]) / (h.dig_max[0] - h.dig_min[0])
+    assert np.max(np.abs(y - expected)) <= step  # within quantisation error
+    # A channel that still fits, and a copied one, keep the input's ranges.
+    src = EdfFile(str(path)).header
+    for i in (1, 2):
+        assert (h.phys_min[i], h.phys_max[i]) == (src.phys_min[i], src.phys_max[i])
+        assert (h.dig_min[i], h.dig_max[i]) == (src.dig_min[i], src.dig_max[i])
+    assert (h.dig_min[2], h.dig_max[2]) == (0, 1000)
+    src_edf = EdfFile(str(path))
+    with edf, src_edf:
+        assert np.array_equal(edf.read_signal(2), src_edf.read_signal(2))
+
+
+def test_a_range_written_the_other_way_round_stays_that_way(tmp_path: Path) -> None:
+    t = np.arange(FS * 120) / FS
+    square = np.where(np.sin(2 * np.pi * 0.05 * t) >= 0, 490.0, -490.0)
+    path = tmp_path / "flipped.edf"
+    write_edf(path, [OutSignal("E1-M2", square, FS, "uV", 500, -500)])
+    result = api.preprocess(str(path), high_hz=5)
+    assert result["channels"][0]["clippedSamples"] == 0
+    h = EdfFile(str(path.with_name("flipped_preprocessed.edf"))).header
+    assert h.phys_min[0] > 500 and h.phys_max[0] < -500

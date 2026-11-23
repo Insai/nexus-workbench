@@ -65,6 +65,10 @@ before any outside workspace sees it.
   that channel, where there is nothing to remove, and names each skip in `notes` (printed
   as `Note:` lines). The sample night at 100 Hz now takes `--low 0.3 --high 35 --notch 50`.
   `applied` lists only what ran on at least one channel.
+- `preprocess` no longer clips a channel whose filtered signal leaves the input's physical
+  range. That channel gets a wider range, fitted to the filtered data, and the full 16-bit
+  digital range; a channel that still fits keeps its range. `clippedSamples` is 0 on the
+  sample night (it was 538 on E1-M2).
 - Tool descriptions say how to page (omit `cursor` for the first page, pass `nextCursor`
   for the next), what `kinds` in `get_events` means, and that `list_recordings` rows carry
   the quality grade and score. A `cursor` of `""` or `"null"` asks for the first page.

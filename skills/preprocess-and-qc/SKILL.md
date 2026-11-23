@@ -64,8 +64,9 @@ result lets the settings fit the result.
 
 - Filters apply to voltage channels only (units V, mV, uV or nV). Other channels, such as
   oximetry or position, are copied unchanged and read `filtered` false.
-- `clippedSamples` above 0: the filtered signal went outside the channel's physical range
-  and was cut there. Often a railed stretch in the input; check it in the input's quality.
+- A channel whose filtered signal leaves the input's physical range is written with a
+  wider range, so filtering does not clip. `clippedSamples` above 0 means a value the new
+  file could not store at all; report it.
 - Quality classes can change after filtering. A high-pass can make a slow drift look ok;
   it does not fix a lost contact. Flat and railed epochs in the input stay suspect data.
 - Band power on a filtered file is not comparable with band power on the raw file in
@@ -79,7 +80,7 @@ result lets the settings fit the result.
 - The tool refuses the settings (an edge at or above half a channel's rate, a resample that
   does not fit the record length, an output that exists). Report the message; do not pick
   new settings yourself.
-- Many samples are clipped on a channel the analysis needs.
+- Any samples are clipped on a channel the analysis needs.
 - Quality gets worse after filtering on a channel the analysis needs.
 
 ## Report

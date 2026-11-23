@@ -8,6 +8,11 @@ annotations are not copied.
 
 A high edge or notch at or above half a channel's sample rate is skipped on that channel,
 because the channel holds nothing at that frequency, and the result's ``notes`` say so.
+
+Filtering can move a signal past the input's physical range (a high-pass recentres a drift,
+a filter rings at a step). Such a channel gets a wider physical range, fitted to the
+filtered data with a small margin, and the full 16-bit digital range, so nothing is cut. A
+channel that still fits keeps the input's range.
 """
 
 from __future__ import annotations
@@ -21,7 +26,7 @@ from typing import Any
 import numpy as np
 from scipy.signal import butter, iirnotch, resample_poly, sosfiltfilt, tf2sos
 
-from .edf import OutSignal, write_edf
+from .edf import OutSignal, header_number, write_edf
 from .errors import LocalToolError
 from .labels import guess_type, safe_label, to_microvolts
 from .report import content_id, display_name, json_safe, rnd
@@ -36,6 +41,9 @@ MAX_RESAMPLE_FACTOR = 1000
 #: Samples written in all, over every channel, so one call stays within a few GB of memory.
 MAX_OUTPUT_SAMPLES = 150_000_000
 DEFAULT_SUFFIX = "_preprocessed.edf"
+#: Share of the filtered data's span added on each side when the physical range is widened.
+RANGE_MARGIN = 0.02
+DIG_MIN, DIG_MAX = -32768, 32767
 METHOD = "Butterworth, order 4, run forward and backward (zero phase)"
 
 
@@ -216,18 +224,22 @@ def preprocess(
             if voltage and rate is not None and out_fs != fs:
                 up, down = _ratio(fs, rate)
                 x = resample_poly(x, up, down)
-            lo, hi = min(h.phys_min[i], h.phys_max[i]), max(h.phys_min[i], h.phys_max[i])
-            clipped = int(np.count_nonzero((x < lo) | (x > hi)))
+            x = x.astype(np.float32)  # half the memory; far finer than 16-bit steps
+            pmin, pmax, dmin, dmax = _output_range(
+                x, h.phys_min[i], h.phys_max[i], h.dig_min[i], h.dig_max[i]
+            )
+            lo, hi = min(pmin, pmax), max(pmin, pmax)
+            clipped = int(np.count_nonzero(~np.isfinite(x) | (x < lo) | (x > hi)))
             signals.append(
                 OutSignal(
                     label=h.labels[i].strip() or f"ch{i + 1}",
-                    data=x.astype(np.float32),
+                    data=x,
                     fs=out_fs,
                     unit=h.units[i].strip(),
-                    phys_min=h.phys_min[i],
-                    phys_max=h.phys_max[i],
-                    dig_min=h.dig_min[i],
-                    dig_max=h.dig_max[i],
+                    phys_min=pmin,
+                    phys_max=pmax,
+                    dig_min=dmin,
+                    dig_max=dmax,
                 )
             )
             rows.append(
@@ -284,6 +296,47 @@ def preprocess(
             "notes": notes,
         }
     )
+
+
+def _output_range(
+    x: np.ndarray, phys_min: float, phys_max: float, dig_min: int, dig_max: int
+) -> tuple[float, float, int, int]:
+    """The physical and digital range to write ``x`` with.
+
+    The input's range when every finite sample fits inside it. Otherwise the range of the
+    data plus a margin of ``RANGE_MARGIN`` of its span on each side, rounded outward to a
+    value the 8-character header field holds exactly, with the full 16-bit digital range.
+    A range written the other way round (minimum above maximum) stays that way round.
+    """
+    lo, hi = min(phys_min, phys_max), max(phys_min, phys_max)
+    finite = x[np.isfinite(x)]
+    if finite.size == 0:
+        return phys_min, phys_max, dig_min, dig_max
+    d_lo, d_hi = float(finite.min()), float(finite.max())
+    if lo <= d_lo and d_hi <= hi:
+        return phys_min, phys_max, dig_min, dig_max
+    pad = RANGE_MARGIN * max(d_hi - d_lo, abs(d_lo), abs(d_hi), 1e-12)
+    new_lo = _round_out(d_lo - pad, down=True)
+    new_hi = _round_out(d_hi + pad, down=False)
+    if phys_min > phys_max:
+        return new_hi, new_lo, DIG_MIN, DIG_MAX
+    return new_lo, new_hi, DIG_MIN, DIG_MAX
+
+
+def _round_out(v: float, *, down: bool) -> float:
+    """``v`` moved away from the data to a value the header writes back unchanged."""
+    if v == 0 or not math.isfinite(v):
+        return v
+    for digits in (4, 3, 2, 1):
+        step = 10.0 ** (math.floor(math.log10(abs(v))) - digits + 1)
+        r = (math.floor(v / step) if down else math.ceil(v / step)) * step
+        r = float(f"{r:.{digits + 1}g}")
+        if header_number(r) == r and (r <= v if down else r >= v):
+            return r
+    r = header_number(v)
+    while (r > v) if down else (r < v):  # pragma: no cover (a value no short form holds)
+        r = header_number(r + (-1 if down else 1) * max(abs(r) * 0.01, 1e-12))
+    return r
 
 
 def _filt(sos: np.ndarray, x: np.ndarray, label: str) -> np.ndarray:

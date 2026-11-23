@@ -511,7 +511,7 @@ Output (two of four channels shown):
   },
   "channels": [
     {"index": 1, "label": "C3-M2", "type": "eeg", "sampleRateHz": 100.0, "outputSampleRateHz": 50.0, "filtered": true, "clippedSamples": 0},
-    {"index": 3, "label": "E1-M2", "type": "eog", "sampleRateHz": 100.0, "outputSampleRateHz": 50.0, "filtered": true, "clippedSamples": 310}
+    {"index": 3, "label": "E1-M2", "type": "eog", "sampleRateHz": 100.0, "outputSampleRateHz": 50.0, "filtered": true, "clippedSamples": 0}
   ],
   "channelsWritten": 4,
   "channelsLeftOut": 0,
@@ -525,8 +525,12 @@ Output (two of four channels shown):
   that order, for what was done.
 - `filtered` is `false` for a channel that is not a voltage (oximetry, position): such
   channels are copied unchanged, at their own rate.
-- `clippedSamples` counts samples that went outside the channel's physical range after
-  filtering and were cut to it.
+- Filtering can carry a signal past the input's physical range (a filter rings at a sharp
+  step, a high-pass recentres a drift). Such a channel is written with a wider physical
+  range, fitted to the filtered data with a 2 % margin, and the full 16-bit digital range,
+  so nothing is cut. A channel that still fits keeps the input's range.
+- `clippedSamples` counts samples the new file could not hold and were cut to its range.
+  Because the range widens to fit, it is 0 unless a value cannot be stored in EDF at all.
 - `channelsLeftOut` counts the input's data channels not chosen.
 - `notes` lists filters skipped on a channel because they sit at or above half its sample
   rate, where the channel holds nothing to remove. A 100 Hz channel has nothing at 50 Hz, so

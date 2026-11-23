@@ -461,6 +461,9 @@ def test_documented_sample_then_preprocess_works(
     out = capsys.readouterr().out
     assert "Applied: band-pass 0.3-35 Hz. The input is unchanged." in out
     assert "Note: notch 50 Hz skipped on C3-M2: at or above half its 100 Hz sample rate." in out
+    rows = [line.split() for line in out.splitlines() if line[:1].isdigit()]
+    assert [row[1] for row in rows] == ["C3-M2", "C4-M1", "E1-M2", "Chin1-Chin2"]
+    assert [row[-1] for row in rows] == ["0"] * 4  # filtering never clips
 
 
 # -- tables and help ---------------------------------------------------------------------------
