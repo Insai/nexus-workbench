@@ -51,16 +51,16 @@ To keep your own agent config untouched, set `CLAUDE_CONFIG_DIR`, `CODEX_HOME`,
 `UV_TOOL_DIR`, `UV_TOOL_BIN_DIR` and `NEXUS_WORKBENCH_CONFIG_DIR` to empty folders
 first.
 
-## Try 1.1 on staging
+## Testing a branch against a staging server
 
-For internal testers. Version 1.1 lives on the `next` branch and talks to the staging
-API, not production. Install it from that branch:
+To try a branch before it is released, install it from that branch:
 
 ```sh
-uv tool install --force git+https://github.com/Insai/nexus-workbench@next
+uv tool install --force git+https://github.com/Insai/nexus-workbench@<branch>
 ```
 
-Point it at staging in the shell you use for the rest of these steps:
+Point it at the server you test against in the shell you use for the rest of these
+steps:
 
 ```sh
 export NEXUS_API_URL=<staging API URL>
@@ -79,8 +79,8 @@ Then register the MCP server without signing in again:
 nexus-workbench setup --no-login
 ```
 
-`setup` saves `NEXUS_API_URL` with the server entry, so your agent talks to staging too.
-Restart the agent session to pick it up. To go back to the released version, run
+`setup` saves `NEXUS_API_URL` with the server entry, so your agent talks to the same
+server. Restart the agent session to pick it up. To go back to the released version, run
 `uv tool install --force nexus-workbench`, unset `NEXUS_API_URL`, then run
 `nexus-workbench setup` again.
 
