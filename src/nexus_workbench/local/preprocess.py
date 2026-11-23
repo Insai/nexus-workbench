@@ -5,6 +5,9 @@ voltage channels only (units V, mV, uV or nV); other channels are copied unchang
 output's patient and recording fields hold the EDF+ "unknown" placeholders and its start
 date and time are 01.01.85 00.00.00, because this package never reads the input's. EDF+
 annotations are not copied.
+
+A high edge or notch at or above half a channel's sample rate is skipped on that channel,
+because the channel holds nothing at that frequency, and the result's ``notes`` say so.
 """
 
 from __future__ import annotations
@@ -132,19 +135,39 @@ def preprocess(
         )
 
     plan = []
+    notes: list[str] = []
     total = 0
+    any_filter_kept = False
+    high_used = notch_used = False
     for i in idx:
         fs = h.fs(i)
         voltage = to_microvolts(h.units[i]) is not None
         nyq = fs / 2
         label = safe_label(h.labels[i], i + 1)
+        ch_high, ch_notch = high, notch
         if voltage:
-            for name, f in (("low_hz", low), ("high_hz", high), ("notch_hz", notch)):
-                if f is not None and f >= nyq:
-                    raise LocalToolError(
-                        f"{name} ({f:g} Hz) is not below half the sample rate of {label} "
-                        f"({fs:g} Hz, so {nyq:g} Hz). Choose a lower value or other channels."
-                    )
+            if low is not None and low >= nyq:
+                raise LocalToolError(
+                    f"low_hz ({low:g} Hz) is not below half the sample rate of {label} "
+                    f"({fs:g} Hz, so {nyq:g} Hz). Choose a lower value or other channels."
+                )
+            if high is not None and high >= nyq:
+                ch_high = None
+                kept = f", so only the {low:g} Hz high-pass applies" if low is not None else ""
+                notes.append(
+                    f"high {high:g} Hz skipped on {label}: at or above half its {fs:g} Hz "
+                    f"sample rate{kept}"
+                )
+            if notch is not None and notch >= nyq:
+                ch_notch = None
+                notes.append(
+                    f"notch {notch:g} Hz skipped on {label}: at or above half its {fs:g} Hz "
+                    "sample rate"
+                )
+            high_used = high_used or ch_high is not None
+            notch_used = notch_used or ch_notch is not None
+            if low is not None or ch_high is not None or ch_notch is not None:
+                any_filter_kept = True
         out_fs = rate if (voltage and rate is not None) else fs
         if voltage and rate is not None:
             up, down = _ratio(fs, rate)
@@ -154,7 +177,14 @@ def preprocess(
                 )
         n_out = int(round(h.n_records * h.samples_per_record[i] * out_fs / fs))
         total += n_out
-        plan.append((i, fs, out_fs, voltage, label))
+        plan.append((i, fs, out_fs, voltage, label, ch_high, ch_notch))
+    if notes and not any_filter_kept and rate is None and channels is None:
+        asked = "high_hz" if high is not None else "notch_hz"
+        f = high if high is not None else notch
+        raise LocalToolError(
+            f"{asked} ({f:g} Hz) is not below half the sample rate of any chosen channel, so "
+            "nothing would change. Choose a lower value or other channels."
+        )
     if total > MAX_OUTPUT_SAMPLES:
         raise LocalToolError(
             f"The output would hold {total:,} samples, more than this tool writes in one go "
@@ -165,20 +195,22 @@ def preprocess(
     signals: list[OutSignal] = []
     rows: list[dict[str, Any]] = []
     with edf:
-        for i, fs, out_fs, voltage, label in plan:
+        for i, fs, out_fs, voltage, label, ch_high, ch_notch in plan:
             x = h.to_physical(i, edf.read_signal(i))
             filtered = False
-            if voltage and (low is not None or high is not None):
-                if low is not None and high is not None:
-                    sos = butter(FILTER_ORDER, [low, high], btype="bandpass", fs=fs, output="sos")
+            if voltage and (low is not None or ch_high is not None):
+                if low is not None and ch_high is not None:
+                    sos = butter(
+                        FILTER_ORDER, [low, ch_high], btype="bandpass", fs=fs, output="sos"
+                    )
                 elif low is not None:
                     sos = butter(FILTER_ORDER, low, btype="highpass", fs=fs, output="sos")
                 else:
-                    sos = butter(FILTER_ORDER, high, btype="lowpass", fs=fs, output="sos")
+                    sos = butter(FILTER_ORDER, ch_high, btype="lowpass", fs=fs, output="sos")
                 x = _filt(sos, x, label)
                 filtered = True
-            if voltage and notch is not None:
-                b, a = iirnotch(notch, NOTCH_Q, fs=fs)
+            if voltage and ch_notch is not None:
+                b, a = iirnotch(ch_notch, NOTCH_Q, fs=fs)
                 x = _filt(tf2sos(b, a), x, label)
                 filtered = True
             if voltage and rate is not None and out_fs != fs:
@@ -217,13 +249,13 @@ def preprocess(
         )
     _write_new(target, signals, h.record_sec)
     applied = []
-    if low is not None or high is not None:
+    if low is not None or high_used:
         applied.append(
             "bandpass"
-            if low is not None and high is not None
+            if low is not None and high_used
             else ("highpass" if low is not None else "lowpass")
         )
-    if notch is not None:
+    if notch_used:
         applied.append("notch")
     if rate is not None:
         applied.append("resample")
@@ -249,6 +281,7 @@ def preprocess(
             "channelsWritten": len(rows),
             "channelsLeftOut": len(h.signal_indices) - len(rows),
             "annotationsCopied": False,
+            "notes": notes,
         }
     )
 

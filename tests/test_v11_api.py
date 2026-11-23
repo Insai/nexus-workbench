@@ -75,7 +75,11 @@ def test_scope_required_is_local_when_the_scopes_are_known(api: FakeAPI) -> None
     assert info.value.status is None
     assert str(info.value) == (
         "This token cannot propose marks. "
-        "Sign in again with `nexus-workbench login --scope detail --scope marks:write`."
+        "Sign in again with `nexus-workbench login --scope marks:write` "
+        "(add `--scope detail` to keep what this token has)."
+    )
+    assert info.value.agent_text.endswith(
+        "(add `--scope detail` to keep what this token has), then restart the agent session."
     )
 
 

@@ -448,6 +448,21 @@ def test_preprocess_command(tmp_path: Path, capsys) -> None:
     assert [ch["label"] for ch in result["channels"]] == ["C3-M2", "C4-M1"]
 
 
+def test_documented_sample_then_preprocess_works(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    """The README path: ``sample`` then ``preprocess ... --low 0.3 --high 35 --notch 50``."""
+    monkeypatch.chdir(tmp_path)
+    assert cli.main(["sample", "--hours", "0.5"]) == 0
+    capsys.readouterr()
+    edf = "nexus-sample/sample_night.edf"
+    argv = ["preprocess", edf, "--low", "0.3", "--high", "35", "--notch", "50"]
+    assert cli.main(argv) == 0
+    out = capsys.readouterr().out
+    assert "Applied: band-pass 0.3-35 Hz. The input is unchanged." in out
+    assert "Note: notch 50 Hz skipped on C3-M2: at or above half its 100 Hz sample rate." in out
+
+
 # -- tables and help ---------------------------------------------------------------------------
 
 

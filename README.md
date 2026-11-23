@@ -235,7 +235,7 @@ Every token has the `read` scope. These change nothing.
 |---|---|
 | `whoami` | The workspace name and id, your role and member id, and the token's scopes, name and expiry. |
 | `list_projects` | Live projects with their recording counts. |
-| `list_recordings` | One page of recordings, newest first (50 by default, at most 100; page with `cursor`). |
+| `list_recordings` | One page of recordings, newest first (50 by default, at most 100), with each one's quality grade and score when graded. Omit `cursor` for the first page; pass `nextCursor` from the previous result for the next. `get_events` and `list_marks` page the same way. |
 | `get_recording` | One recording: channel summary, minutes per sleep stage, event and mark counts, when you are allowed to see them. |
 | `list_members` | The workspace's people as opaque member ids with their role. No names or emails. |
 | `list_tasks` | Review tasks given to you, or also the ones you gave. |
@@ -277,7 +277,7 @@ Inputs, outputs, methods and a Python example are in [docs/tools.md](docs/tools.
 | `compute_band_power` | Delta, theta, alpha, sigma and beta power per EEG channel over clean epochs, and per sleep stage with a hypnogram. |
 | `compare_hypnograms` | Agreement, Cohen's kappa, per-stage precision, recall and F1, and the confusion matrix for two hypnograms of one night. |
 | `compare_events` | One-to-one matching of candidate events to reference events, with precision, recall, F1 and a shuffled null. |
-| `preprocess` | Writes a new EDF: band-pass, 50 or 60 Hz notch, resample and channel choice. Never changes the input. |
+| `preprocess` | Writes a new EDF: band-pass, 50 or 60 Hz notch, resample and channel choice. Never changes the input. A notch or high edge at or above half a channel's sample rate is skipped on that channel and listed in `notes`. |
 
 Only `preprocess` writes, and only a new file; the other local tools write nothing.
 

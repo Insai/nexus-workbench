@@ -61,6 +61,15 @@ before any outside workspace sees it.
   takes agent writes. Without a write scope nothing is written, as before.
 - `compare_hypnograms` and `compare_events` are marked open-world, since they can read
   Workbench.
+- `preprocess` skips a notch or a high edge at or above half a channel's sample rate on
+  that channel, where there is nothing to remove, and names each skip in `notes` (printed
+  as `Note:` lines). The sample night at 100 Hz now takes `--low 0.3 --high 35 --notch 50`.
+  `applied` lists only what ran on at least one channel.
+- Tool descriptions say how to page (omit `cursor` for the first page, pass `nextCursor`
+  for the next), what `kinds` in `get_events` means, and that `list_recordings` rows carry
+  the quality grade and score. A `cursor` of `""` or `"null"` asks for the first page.
+- A missing scope names the `login` command for that scope, and through the MCP server
+  adds "then restart the agent session".
 
 ## [0.1.0] – unreleased
 

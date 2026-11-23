@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "nexus-workbench"
-version = "0.1.0.dev0"
+version = "0.2.0.dev0"
 description = "CLI, MCP server and skills that connect Claude Code and Codex to Insai Workbench, with local EEG file tools."
 readme = "README.md"
 license = "Apache-2.0"

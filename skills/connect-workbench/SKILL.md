@@ -148,7 +148,7 @@ message, not the exact words; the wording can change between versions.
 | "not switched on for this workspace yet" | Agent access is off for this workspace. | See Early access. Stop. |
 | "Agent access is not available on this Workbench server yet" | The server does not offer agent access yet. | Stop and tell the researcher. Local tools still work. |
 | "does not exist in this workspace, or you cannot see it" | The id is not in this workspace, or they may not see it. | Re-list with `list_projects` or `list_recordings`; do not guess ids. |
-| "This token cannot read per-epoch and per-event detail", "This token cannot propose marks", "cannot withdraw marks", "cannot give review tasks", "cannot start an analysis" | The token lacks the scope. The message names the `login` command with the scope. | Tell the researcher the command; they run it in their terminal and restart the session. Do not retry. |
+| "This token cannot read per-epoch and per-event detail", "This token cannot propose marks", "cannot withdraw marks", "cannot give review tasks", "cannot start an analysis" | The token lacks the scope. The message names the `login` command with the scope. | Tell the researcher to run the command it names in their terminal, for example `nexus-workbench login --scope marks:write` (or `--scope tasks:write`, `--scope detail`), then restart the agent session so the new tools load. Do not retry. |
 | "This workspace does not take agent writes yet" | `agentWrite` is off for the workspace. | Stop. Insai switches it on. Reads still work. |
 | "Workbench refused to write marks on this recording" | The researcher is held blind on that recording or its night, or no longer reads the workspace. | Stop for that recording. Do not try another way. |
 | "only the person who uploaded the recording can ask for one" | `request_analysis` on someone else's recording. | Tell the researcher; the uploader can ask. |
@@ -172,9 +172,15 @@ Never retry a refusal in a loop.
 
 - `list_projects`: live projects with `recordingCount`.
 - `list_recordings`: one page, newest first. Pass `project_id` (an id from
-  `list_projects`) for one project only, `limit` (1 to 100, default 50), and the
-  `nextCursor` of the previous page as `cursor`. `nextCursor` is `null` on the last page. If
-  `truncated` is `true` the list is incomplete; say so when you report counts.
+  `list_projects`) for one project only and `limit` (1 to 100, default 50). Omit `cursor`
+  for the first page; pass `nextCursor` from the previous result for the next.
+  `nextCursor` is `null` on the last page. `get_events` and `list_marks` page the same way.
+  If `truncated` is `true` the list is incomplete; say so when you report counts. Rows
+  carry `qualityGrade` and `qualityScore` when graded: answer quality questions across
+  recordings from them, and call `get_quality` only for per-epoch or per-channel detail.
+- `get_events`: `kinds` is the set of kinds this recording's analysis detects. A kind not
+  listed, such as `arousal`, has no machine detector there; zero counts mean none were
+  found.
 - `get_recording`: one row plus `channels`, `stageMinutes`, `eventCounts` and
   `humanCounts`, each only when known and allowed.
 - `list_nights`: recordings recorded together, with an opaque `personKey` when the

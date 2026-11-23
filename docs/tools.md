@@ -515,7 +515,8 @@ Output (two of four channels shown):
   ],
   "channelsWritten": 4,
   "channelsLeftOut": 0,
-  "annotationsCopied": false
+  "annotationsCopied": false,
+  "notes": []
 }
 ```
 
@@ -527,6 +528,11 @@ Output (two of four channels shown):
 - `clippedSamples` counts samples that went outside the channel's physical range after
   filtering and were cut to it.
 - `channelsLeftOut` counts the input's data channels not chosen.
+- `notes` lists filters skipped on a channel because they sit at or above half its sample
+  rate, where the channel holds nothing to remove. A 100 Hz channel has nothing at 50 Hz, so
+  `--notch 50` on it reads `notch 50 Hz skipped on C3-M2: at or above half its 100 Hz
+  sample rate`. A `high_hz` there is skipped the same way, leaving any `low_hz` as a
+  high-pass. A 256 Hz channel in the same file still gets the notch.
 
 Method. Band-pass, high-pass and low-pass are 4th-order Butterworth filters in
 second-order sections, run forward and backward (`scipy.signal.sosfiltfilt`), so there is
@@ -538,8 +544,9 @@ placeholders and its start date and time are 01.01.85 00.00.00, because this pac
 reads the input's. EDF+ annotations are not copied.
 
 Refused, with a message that names the setting: nothing to do; `low_hz` at or above
-`high_hz`; an edge or notch at or above half a filtered channel's sample rate; a notch other
-than 50 or 60; a `resample_hz` that is not a whole number, gives no whole number of samples
+`high_hz`; a `low_hz` at or above half a filtered channel's sample rate; a `high_hz` or
+notch at or above half the rate of every filtered channel, with nothing else asked; a notch
+other than 50 or 60; a `resample_hz` that is not a whole number, gives no whole number of samples
 per data record, or is not more than twice `high_hz`; an `out` that exists, is the input,
 does not end in `.edf` or is in a folder that does not exist; an EDF+D file.
 
@@ -646,6 +653,15 @@ The four version 1 tools (`whoami`, `list_projects`, `list_recordings`, `get_rec
 are described in [contract.md](contract.md) section 3.2. `whoami` now also returns your
 `memberId` and the token's `scopes`.
 
+Paging. `list_recordings`, `get_events` and `list_marks` return one page at a time. Omit
+`cursor` for the first page; pass `nextCursor` from the previous result for the next, and
+stop when it is `null`. A `cursor` of `null`, `""` or `"null"` is treated as omitted, so it
+asks for the first page.
+
+Quality across recordings. `list_recordings` rows already carry `qualityGrade` and
+`qualityScore` when the recording was graded, so answer "which recordings are poor" from
+the rows. Call `get_quality` only for per-epoch or per-channel detail on one recording.
+
 Everything below is agent API version 1.1. It is on staging and used internally first.
 Against a version 1 server each of these tools answers "This Workbench server does not
 offer ... yet".
@@ -667,8 +683,12 @@ offer ... yet".
 
 The server lists a detail or write tool only when the saved token has its scope (read
 from the credentials file at start, with no call). A call the token's scopes do not cover
-fails with "This token cannot ... Sign in again with `nexus-workbench login --scope ...`.",
-before any request when the scopes were saved with the token. A token from `NEXUS_TOKEN`
+fails with "This token cannot ... Sign in again with `nexus-workbench login --scope ...`",
+before any request when the scopes were saved with the token. Through the MCP server the
+message ends "then restart the agent session", because the tool list is read once when the
+session starts. For example: "This token cannot propose marks. Sign in again with
+`nexus-workbench login --scope marks:write` (add `--scope detail` to keep what this token
+has), then restart the agent session." A token from `NEXUS_TOKEN`
 has no saved scopes, so with it only the read and local tools are listed. Writes also need
 the workspace's agent writes switch; without it they answer "This workspace does not take
 agent writes yet."
@@ -759,13 +779,18 @@ Arguments: `id` (recording, required), `kind` (optional), `cursor` (optional), `
 {"available": true, "kinds": ["arousal", "spindle"], "events": [{"onsetSec": 300.0, "durationSec": 1.0, "kind": "spindle", "channel": 1, "confidence": 0.8}, {"onsetSec": 300.0, "durationSec": 1.0, "kind": "spindle", "channel": 2}], "nextCursor": "…"}
 ```
 
+- `kinds` is the set of event kinds this recording's analysis detects. A kind not listed
+  (for example `arousal` on a recording whose analysis has no arousal detector) has no
+  machine detector there, so no rows says nothing about the signal. A listed kind with a
+  zero count, or no rows on a first page without `nextCursor`, means none were found.
 - `onsetSec` and `durationSec` are seconds from the recording start; `channel` is the
   1-based position in `get_recording`'s `channels.labels`; `confidence` only when given.
 - One event on several channels is one row per channel, so totals differ from
   `eventCounts`. Sorted by onset, then channel, then kind.
 - `available: false` (no `events`) when there are no machine events. Blinded:
-  `{"hidden": "blind"}`. Page with `cursor` set to `nextCursor`. A cursor is signed by the
-  server: pass it back as it came, or it is refused.
+  `{"hidden": "blind"}`. Omit `cursor` for the first page; pass `nextCursor` from the
+  previous result for the next. A cursor is signed by the server: pass it back as it came,
+  or it is refused.
 - A recording whose events are over 20 MB is refused with `too_large` ("open it in
   Workbench"). 10 calls a minute.
 

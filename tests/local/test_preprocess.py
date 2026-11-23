@@ -143,9 +143,68 @@ def test_refusals(mains: Path, kwargs: dict[str, Any], needle: str) -> None:
     assert not mains.with_name("mains_preprocessed.edf").exists()
 
 
-def test_notch_at_the_nyquist_rate_is_refused_on_the_sample_night(copy: Path) -> None:
+def test_the_documented_command_works_on_the_sample_night(copy: Path) -> None:
+    """``sample`` then ``preprocess ... --low 0.3 --high 35 --notch 50``: at 100 Hz there is
+    nothing at 50 Hz, so the notch is skipped per channel and named in notes."""
+    before = digest(copy)
+    result = api.preprocess(str(copy), low_hz=0.3, high_hz=35, notch_hz=50)
+    assert digest(copy) == before
+    assert result["applied"] == ["bandpass"]  # the notch ran on no channel
+    assert result["filters"]["notchHz"] == 50  # what was asked
+    assert [c["filtered"] for c in result["channels"]] == [True] * 4
+    labels = [c["label"] for c in result["channels"]]
+    assert result["notes"] == [
+        f"notch 50 Hz skipped on {label}: at or above half its 100 Hz sample rate"
+        for label in labels
+    ]
+
+
+def test_notch_alone_above_nyquist_everywhere_is_refused(copy: Path) -> None:
     with pytest.raises(LocalToolError, match=r"notch_hz \(50 Hz\) is not below half"):
-        api.preprocess(str(copy), notch_hz=50)  # 100 Hz: 50 Hz is the Nyquist frequency
+        api.preprocess(str(copy), notch_hz=50)  # nothing would change
+    assert not copy.with_name("sample_night_preprocessed.edf").exists()
+
+
+def test_high_edge_above_nyquist_leaves_a_high_pass(copy: Path) -> None:
+    result = api.preprocess(str(copy), low_hz=0.3, high_hz=60)
+    assert all(c["filtered"] for c in result["channels"])
+    assert result["applied"] == ["highpass"]
+    assert result["notes"][0].startswith("high 60 Hz skipped on ")
+    assert result["notes"][0].endswith(
+        "at or above half its 100 Hz sample rate, so only the 0.3 Hz high-pass applies"
+    )
+
+
+def test_a_256_hz_file_still_gets_the_notch(tmp_path: Path) -> None:
+    fs = 256
+    t = np.arange(fs * 120) / fs
+    eeg = 20 * np.sin(2 * np.pi * 10 * t) + 40 * np.sin(2 * np.pi * 50 * t)
+    path = write_test_edf(tmp_path / "fast.edf", [eeg], fs, ["C3-M2"])
+    result = api.preprocess(str(path), low_hz=0.3, high_hz=35, notch_hz=50)
+    assert result["notes"] == []
+    assert result["filters"]["notchHz"] == 50
+    y, out_fs = signal(path.with_name("fast_preprocessed.edf"))
+    assert out_fs == fs
+    assert amplitude(y, fs, 50) < 0.05 * 40
+
+
+def test_mixed_rates_skip_the_notch_only_where_needed(tmp_path: Path) -> None:
+    t_fast = np.arange(256 * 60) / 256
+    t_slow = np.arange(100 * 60) / 100
+    path = tmp_path / "mixed_rates.edf"
+    write_edf(
+        path,
+        [
+            OutSignal("C3-M2", 40 * np.sin(2 * np.pi * 50 * t_fast), 256, "uV", -500, 500),
+            OutSignal("E1-M2", 20 * np.sin(2 * np.pi * 1 * t_slow), 100, "uV", -500, 500),
+        ],
+    )
+    result = api.preprocess(str(path), notch_hz=50)
+    assert result["applied"] == ["notch"]
+    assert [c["filtered"] for c in result["channels"]] == [True, False]
+    assert result["notes"] == [
+        "notch 50 Hz skipped on E1-M2: at or above half its 100 Hz sample rate"
+    ]
 
 
 def test_missing_folder_for_out(mains: Path, tmp_path: Path) -> None:

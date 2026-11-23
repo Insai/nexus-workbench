@@ -220,13 +220,21 @@ class ScopeRequired(WorkbenchError):
                 else "This token lacks the scope this needs."
             )
         if "hint" not in kwargs:
-            wanted = [*(have or ()), self.scope] if self.scope else list(have or ())
-            kwargs["hint"] = (
-                f"Sign in again with `{sc.login_command(wanted)}`."
-                if self.scope
-                else "Sign in again with `nexus-workbench login --scope <scope>`."
-            )
+            if self.scope:
+                keep = [s for s in sc.normalise(have) if s not in (sc.READ, self.scope)]
+                extra = " ".join(f"`--scope {s}`" for s in keep)
+                kwargs["hint"] = f"Sign in again with `{sc.login_command([self.scope])}`" + (
+                    f" (add {extra} to keep what this token has)." if keep else "."
+                )
+            else:
+                kwargs["hint"] = "Sign in again with `nexus-workbench login --scope <scope>`."
         super().__init__(*args, **kwargs)
+
+    @property
+    def agent_text(self) -> str:
+        """The text for an agent: the same, plus the restart the new scopes need."""
+        hint = self.hint.rstrip(".")
+        return f"{self.message} {hint}, then restart the agent session.".strip()
 
 
 class WriteAccessRequired(WorkbenchError):
@@ -637,10 +645,13 @@ class WorkbenchClient:
         """Call one agent API action. Arguments use the contract's names (e.g. ``projectId``).
 
         When the token's scopes are known and lack the one ``action`` needs, it raises
-        :class:`ScopeRequired` before any call (contract 7.10).
+        :class:`ScopeRequired` before any call (contract 7.10). A ``None``, empty or "null"
+        ``cursor`` is left out, so it asks for the first page.
         """
         token = self._resolve_token()
         self.require_scope(action)
+        if isinstance(args.get("cursor"), str) and args["cursor"].strip() in ("", "null"):
+            args["cursor"] = None  # an agent's "no cursor yet": the first page, not an error
         body = {"action": action, **{k: v for k, v in args.items() if v is not None}}
         return self._post(AGENT_API_PATH, body, token=token)
 

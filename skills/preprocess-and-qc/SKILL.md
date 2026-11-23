@@ -34,7 +34,9 @@ result lets the settings fit the result.
    mains noise is there; a band-pass that ends below the mains frequency already removes
    it.
 3. The resample rate, a whole number of Hz. Every filter edge must sit below half the new
-   rate; the tool refuses otherwise.
+   rate; the tool refuses otherwise. A notch or high edge at or above half a channel's own
+   rate is skipped on that channel and named in `notes`: a 100 Hz recording holds nothing
+   at 50 Hz.
 4. The channels, as `inspect_edf` labels, `ch<N>` or 1-based positions.
 
 ## Steps
@@ -52,6 +54,7 @@ result lets the settings fit the result.
 | `channels[]` | Per channel: rates in and out, `filtered`, and `clippedSamples`. |
 | `channelsWritten`, `channelsLeftOut` | Channels in the new file and those not chosen. |
 | `annotationsCopied` | Always false: EDF+ annotations are not copied. |
+| `notes` | Filters skipped on a channel because they sit at or above half its sample rate. Tell the researcher. |
 
 4. `check_signal_quality` on the new file, with the same `epoch_sec`. Compare per channel
    with the input.

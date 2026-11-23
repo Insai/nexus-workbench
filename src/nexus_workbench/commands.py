@@ -657,12 +657,13 @@ def cmd_preprocess(args: argparse.Namespace) -> int:
         _out(result)
         return cli.OK
     f = result["filters"]
+    applied = result["applied"]
     steps = []
-    if f["lowHz"] is not None or f["highHz"] is not None:
+    if "bandpass" in applied or "highpass" in applied or "lowpass" in applied:
         lo = f"{f['lowHz']:g}" if f["lowHz"] is not None else "0"
-        hi = f"{f['highHz']:g}" if f["highHz"] is not None else "Nyquist"
+        hi = f"{f['highHz']:g}" if "highpass" not in applied else "Nyquist"
         steps.append(f"band-pass {lo}-{hi} Hz")
-    if f["notchHz"] is not None:
+    if "notch" in applied:
         steps.append(f"notch {f['notchHz']:g} Hz")
     if f["resampleHz"] is not None:
         steps.append(f"resample to {f['resampleHz']:g} Hz")
@@ -691,6 +692,8 @@ def cmd_preprocess(args: argparse.Namespace) -> int:
     )
     if result["channelsLeftOut"]:
         print(f"Left out {result['channelsLeftOut']} channels.")
+    for note in result.get("notes") or []:
+        print(f"Note: {note}.")
     print("Annotations and the header's identity fields were not copied.")
     return cli.OK
 

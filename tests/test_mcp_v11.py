@@ -218,8 +218,61 @@ def test_scope_refusal_through_a_tool_names_the_login_command(api: FakeAPI) -> N
     assert result.is_error is True
     assert text_of(result) == (
         "This token cannot read per-epoch and per-event detail. "
-        "Sign in again with `nexus-workbench login --scope detail`."
+        "Sign in again with `nexus-workbench login --scope detail`, "
+        "then restart the agent session."
     )
+
+
+@pytest.mark.parametrize(
+    ("tool", "args", "scope"),
+    [
+        ("propose_marks", {"id": "e_1", "marks": [MARK]}, "marks:write"),
+        ("withdraw_marks", {"id": "e_1"}, "marks:write"),
+        (
+            "create_review_task",
+            {"ids": ["e_1"], "member_id": OTHER, "mode": "blind"},
+            "tasks:write",
+        ),
+    ],
+)
+def test_write_scope_refusal_names_the_command_and_the_restart(
+    api: FakeAPI, tool: str, args: dict[str, Any], scope: str
+) -> None:
+    server = server_for(api, api.add_token(scopes=["read", "detail"]), scopes=ALL)
+    (result,) = calls(server, (tool, args))
+    assert result.is_error is True
+    text = text_of(result)
+    assert f"`nexus-workbench login --scope {scope}`" in text
+    assert text.endswith("then restart the agent session.")
+    description = listing(server)[0][tool].description or ""
+    assert f"`nexus-workbench login --scope {scope}`" in description
+    assert "then restart the agent session" in description
+
+
+def test_paged_tools_say_how_to_page_and_null_cursor_is_the_first_page(api: FakeAPI) -> None:
+    server = server_for(api, api.add_token(scopes=ALL), scopes=ALL)
+    tools = listing(server)[0]
+    for name in ("list_recordings", "get_events", "list_marks"):
+        assert mcp_server.PAGING in (tools[name].description or ""), name
+        cursor = tools[name].input_schema["properties"]["cursor"]
+        assert "Omit `cursor` for the first page" in cursor["description"], name
+    events = tools["get_events"].description or ""
+    assert events.startswith("kinds is the set of event kinds this recording's analysis detects")
+    assert "arousal" in events and "zero count" in events
+    assert "qualityGrade and qualityScore" in (tools["list_recordings"].description or "")
+    before = len(api.requests)
+    (first,) = calls(server, ("list_recordings", {"limit": 2, "cursor": None}))
+    assert first.is_error is not True
+    sent = api.requests[before:]
+    assert len(sent) == 1 and b"cursor" not in sent[0].content
+
+
+@pytest.mark.parametrize("blank", ["", "null", " "])
+def test_client_treats_a_blank_or_null_cursor_as_the_first_page(api: FakeAPI, blank: str) -> None:
+    token = api.add_token(scopes=ALL)
+    with c.WorkbenchClient(api_base=API_BASE, token=token, transport=api.transport) as client:
+        client.call("list_recordings", limit=2, cursor=blank)
+    assert b"cursor" not in api.requests[-1].content
 
 
 def test_allowlist_and_caps_on_what_the_server_sends(api: FakeAPI) -> None:

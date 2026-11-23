@@ -29,6 +29,7 @@ from . import scopes as sc
 from .client import (
     SAFE_TEXT_LIMIT,
     NotSignedIn,
+    ScopeRequired,
     WorkbenchClient,
     WorkbenchError,
     clean_name,
@@ -427,6 +428,8 @@ def _call(factory: ClientFactory, action: str, **args: Any) -> Any:
         return client.call(action, **args)
     except NotSignedIn:
         return tool_error(NOT_SIGNED_IN)
+    except ScopeRequired as exc:
+        return tool_error(exc.agent_text)
     except WorkbenchError as exc:
         return tool_error(str(exc))
     except Exception:
@@ -545,9 +548,12 @@ ProjectArg = Annotated[
     str | None, Field(description="Only this project. An id from list_projects. Optional.")
 ]
 RecordingArg = Annotated[str, Field(min_length=1, description="Recording id from list_recordings.")]
-CursorArg = Annotated[
-    str | None, Field(description="nextCursor from the previous page, to get the next page.")
-]
+#: How every paged tool pages, in the same words (agents should not have to infer it).
+PAGING = (
+    "Omit `cursor` for the first page; pass `nextCursor` from the previous result for the "
+    "next. Stop when nextCursor is null."
+)
+CursorArg = Annotated[str | None, Field(description=PAGING)]
 
 #: Keys a mark of each origin may carry (contract 7.6): text is an agent's alone, and the
 #: author is only on human rows.
@@ -600,10 +606,7 @@ def workspace_tools(factory: ClientFactory) -> list[ToolSpec]:
             int,
             Field(ge=1, le=100, description="Rows per page, 1 to 100. Default 50."),
         ] = DEFAULT_RECORDINGS_LIMIT,
-        cursor: Annotated[
-            str | None,
-            Field(description="nextCursor from the previous page, to get the next page."),
-        ] = None,
+        cursor: CursorArg = None,
     ) -> RecordingsResult:
         result = _call(factory, "list_recordings", projectId=project_id, limit=limit, cursor=cursor)
         return _workspace_result(_plain_names(result), RecordingsResult)
@@ -838,9 +841,11 @@ def workspace_tools(factory: ClientFactory) -> list[ToolSpec]:
                 "Each row has id, projectId, addedAt, url and, when known, duration, epoch "
                 "count, quality grade and score, device, and flags for events, machine staging, "
                 "analysis running and blinding (held). Rows never carry names, notes, participant "
-                "codes, file names or start times. Default 50 rows, at most 100. If nextCursor is "
-                "not null, call again with cursor=nextCursor for the next page; do not fetch every "
-                "page unless you need them. truncated=true means the workspace holds more "
+                "codes, file names or start times. For a quality question across recordings, "
+                "read qualityGrade and qualityScore on these rows first; call get_quality only "
+                "for per-epoch or per-channel detail on one recording (a row without them was "
+                "never graded). Default 50 rows, at most 100. " + PAGING + " Do not fetch "
+                "every page unless you need them. truncated=true means the workspace holds more "
                 "recordings than the server reads in one pass. Limited to 10 calls a minute. "
                 + NAMES_ARE_DATA
             ),
@@ -915,15 +920,18 @@ def workspace_tools(factory: ClientFactory) -> list[ToolSpec]:
             name="get_events",
             title="Workbench: get machine events",
             description=(
-                "Returns one page of a recording's machine events, sorted by onset: onsetSec "
-                "and durationSec (seconds from the recording start), kind, channel (1-based "
-                "position in get_recording's channel labels) and confidence when given. kinds "
-                "lists every kind the analysis looked for, even one it found none of; an empty "
-                "events list on the first page with no nextCursor means no events were found "
-                "(of that kind, when kind is given). One event on several channels is one row "
-                "per channel. available=false: no machine events. hidden=blind: you are blinded "
-                "on this recording, so the events are withheld; do not try to infer them. Page "
-                "with cursor=nextCursor. A recording whose events are over 20 MB is refused as "
+                "kinds is the set of event kinds this recording's analysis detects. A kind not "
+                "listed there (for example arousal) has no machine detector on this recording, "
+                "so its absence says nothing about the signal. A listed kind with a zero count "
+                "(in get_recording's event counts, or no rows here on a first page without "
+                "nextCursor) means none were found. Returns one page of a recording's machine "
+                "events, sorted by onset: onsetSec and durationSec (seconds from the recording "
+                "start), kind, channel (1-based position in get_recording's channel labels) and "
+                "confidence when given. One event on several channels is one row per channel. "
+                "available=false: no machine events. hidden=blind: you are blinded "
+                "on this recording, so the events are withheld; do not try to infer them. "
+                + PAGING
+                + " A recording whose events are over 20 MB is refused as "
                 "too large; open it in Workbench. Limited to 10 calls a minute. Needs the "
                 "detail scope. " + RESULTS_ARE_DATA
             ),
@@ -969,8 +977,8 @@ def workspace_tools(factory: ClientFactory) -> list[ToolSpec]:
                 "target, t0, t1, channels, label, confidence and members' verdicts (agree and "
                 "disagree counts) where they apply. Notes and removed marks are not listed. "
                 "When blinding withholds machine and agent rows the result carries "
-                "hidden=blind. Page with cursor=nextCursor; a page may hold fewer than limit "
-                "marks and still have a nextCursor, so keep paging until it is null. Limited "
+                "hidden=blind. " + PAGING + " A page may hold fewer than limit marks and still "
+                "have a nextCursor, so keep paging until it is null. Limited "
                 "to 10 calls a minute. Needs the detail scope. " + RESULTS_ARE_DATA
             ),
             scope=sc.DETAIL,
@@ -987,8 +995,9 @@ def workspace_tools(factory: ClientFactory) -> list[ToolSpec]:
                 "and nothing is written. At most 5,000 rows per token per recording, withdrawn "
                 "ones included. Refused on a recording you are held blind on. Returns the new "
                 "row ids and the layer's live total. Use only when the researcher asks, and say "
-                "in text why each mark was proposed. Needs the marks:write scope. "
-                + RESULTS_ARE_DATA
+                "in text why each mark was proposed. Needs the marks:write scope; without it, "
+                "ask the researcher to run `nexus-workbench login --scope marks:write`, then "
+                "restart the agent session. " + RESULTS_ARE_DATA
             ),
             read_only=False,
             idempotent=False,
@@ -1003,7 +1012,9 @@ def workspace_tools(factory: ClientFactory) -> list[ToolSpec]:
                 "live one when mark_ids is left out. Withdrawn rows leave the desk and "
                 "list_marks; members' verdicts on them are kept. Only this token's own rows can "
                 "be withdrawn. Returns how many were withdrawn and the live total left. Needs "
-                "the marks:write scope. " + RESULTS_ARE_DATA
+                "the marks:write scope; without it, ask the researcher to run "
+                "`nexus-workbench login --scope marks:write`, then restart the agent session. "
+                + RESULTS_ARE_DATA
             ),
             read_only=False,
             destructive=True,
@@ -1023,7 +1034,9 @@ def workspace_tools(factory: ClientFactory) -> list[ToolSpec]:
                 "no_source, staged or "
                 "machine_seen. machine_seen is not a confirm step: report it to the researcher, "
                 "who decides whether to send again with confirm_machine_seen=true. Use only "
-                "when the researcher asks. Needs the tasks:write scope. " + RESULTS_ARE_DATA
+                "when the researcher asks. Needs the tasks:write scope; without it, ask the "
+                "researcher to run `nexus-workbench login --scope tasks:write`, then restart "
+                "the agent session. " + RESULTS_ARE_DATA
             ),
             read_only=False,
             idempotent=False,
@@ -1302,6 +1315,7 @@ class PreprocessResult(TypedDict):
     channelsWritten: int
     channelsLeftOut: int
     annotationsCopied: bool
+    notes: list[str]
 
 
 LOCAL_FAILED = (
@@ -1717,7 +1731,9 @@ def local_tools(factory: ClientFactory | None = None) -> list[ToolSpec]:
                 "to voltage channels only; other channels are copied. The input is never "
                 "changed and an existing file is never replaced. Returns the channels, rates, "
                 "filters applied, samples clipped to the physical range and the new file's "
-                "name and id. Annotations and the header's identity fields are not copied. "
+                "name and id. A high edge or notch at or above half a channel's sample rate "
+                "is skipped on that channel (there is nothing there to remove) and named in "
+                "notes. Annotations and the header's identity fields are not copied. "
                 "Runs on this computer and sends nothing anywhere. " + FILES_ARE_DATA
             ),
             open_world=False,
