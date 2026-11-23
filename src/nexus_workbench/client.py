@@ -196,6 +196,51 @@ class UnexpectedResponse(WorkbenchError):
     default_hint = "Update with `uv tool upgrade nexus-workbench`, then try again."
 
 
+class ServerRefusal(WorkbenchError):
+    """A refusal whose code the server chose and the client passes through unchanged
+    (contract 7.10 and 7.12): ``code`` is the server's, and ``extra`` holds the body's other
+    top-level keys (``scope``, ``current``)."""
+
+    default_message = "Workbench refused the request."
+
+    def __init__(
+        self,
+        code: str,
+        message: str | None = None,
+        *,
+        hint: str | None = None,
+        status: int | None = None,
+        extra: dict[str, Any] | None = None,
+    ) -> None:
+        self.code = code
+        self.extra = dict(extra or {})
+        super().__init__(message, hint=hint, status=status)
+
+
+#: Server codes passed through as :class:`ServerRefusal` (contract 7.10 and 7.12).
+PASSTHROUGH_CODES = frozenset(
+    {
+        "scope_required",
+        "write_access_required",
+        "not_available",
+        "unavailable",
+        "held",
+        "insai_checked",
+        "checked_needs_insai",
+        "bad_port",
+        "bad_site",
+        "duplicate_site",
+        "changed",
+        "fixed_device",
+        "combined",
+        "device_crossed",
+        "no_source_key",
+        "header_unparsed",
+        "incomplete",
+    }
+)
+
+
 ERRORS_BY_CODE: dict[str, type[WorkbenchError]] = {
     cls.code: cls
     for cls in (
@@ -332,6 +377,11 @@ def error_from_response(
             hint=f"Check {ENV_API_URL} if you set it.",
             status=status,
         )
+
+    if isinstance(code, str) and code in PASSTHROUGH_CODES:
+        extra = {k: v for k, v in body.items() if k != "error"} if isinstance(body, dict) else {}
+        message = _one_line(error.get("message")) if isinstance(error, dict) else None
+        return ServerRefusal(code, message, status=status, extra=extra)
 
     retry_after = _parse_retry_after(response.headers.get("Retry-After"))
     cls = ERRORS_BY_CODE.get(code) if isinstance(code, str) else None

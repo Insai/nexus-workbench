@@ -1072,6 +1072,42 @@ through unchanged):
 | `already_analysed` | `request_analysis` on a recording with machine output. |
 | `mark_limit` | `propose_marks` past 5,000 rows per token on the recording. |
 
+### 7.12 Channel sites (staging)
+
+Which electrode site each channel of a recording records. Canonical in
+nexus-cloud; this section is the
+client's summary. Only while the server's `WORKBENCH_MONTAGE` switch is on;
+otherwise both actions answer 501 `not_available`.
+
+| Action | Scope | Input | Output keys |
+|---|---|---|---|
+| `get_channels` | `read` | `id` | `effective`, `ports`, `checked`, `version`, `permissions`, `presets`, `contractRevision` |
+| `set_channels` | `channels:write` (a write scope: needs `agentWrite`) | `id`, `expectedVersion`, `ports` (`{}` clears), `checked` | `version`, `ports`, `checked`, `effective`, `prev`, `unchanged` |
+
+- Ports are `Ec1`, `Et1`, `Ec2`, `Et2` (firmware order), case-blind on
+  input. A value is a 10-10 site (`Fp1`, `AF7`, ...), a mastoid (`M1`,
+  `M2`) or an in-ear site; the server spells it. A missing port is not placed.
+- `expectedVersion` is the `version` from `get_channels` (0 when none was
+  ever set). The token's owner is the actor, under the desk's own policy.
+- A label that is not a standard electrode or sensor name reads `chN`.
+
+Refusals (`{"error": {"code", "message"}}`):
+
+| HTTP | `code` |
+|---|---|
+| 403 | `held`, `insai_checked`, `checked_needs_insai` |
+| 400 | `bad_port`, `bad_site`, `duplicate_site`, `invalid_argument` |
+| 409 | `changed` (with top-level `current: {version, ports, checked}`), `fixed_device`, `combined`, `device_crossed`, `no_source_key`, `header_unparsed`, `incomplete` |
+| 404 | `not_found` |
+| 503 | `unavailable` (the file header could not be read) |
+| 501 | `not_available` |
+
+The client passes these codes through unchanged, as it does `scope_required`
+and `write_access_required`. `nexus-workbench channels show | set | clear`
+wraps the two actions: `set` reads the version first unless
+`--expected-version` is given, keeps the ports it is not given, and exits 3
+on a refusal and 4 on sign-in, scope or access.
+
 ### 7.11 Still later
 
 Signal download; a `personKey` on recording rows; reading another person's

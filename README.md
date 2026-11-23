@@ -126,6 +126,9 @@ Signed out, the local tools work and need no account. The workspace tools answer
 | `nexus-workbench logout` | Remove the saved token from this computer. |
 | `nexus-workbench whoami` | Show the workspace your token reads. |
 | `nexus-workbench recordings` | List recordings (`--project`, `--limit`, `--cursor`, `--json`). |
+| `nexus-workbench channels show ID` | The electrode site each channel records, its label in the app, whether the sites are checked, whether the device fixes them, and the version (`--json`). |
+| `nexus-workbench channels set ID` | Set a headband's four port sites: `--port Ec1=M1` (repeat) or `--preset frontal_on_et`, then `--checked` or `--unchecked`; `--expected-version N`. Needs a token with `channels:write`. Prints the old and new sites and the command that undoes it. |
+| `nexus-workbench channels clear ID` | Remove the sites set on a recording. |
 | `nexus-workbench sample` | Write a synthetic sample night to try the local tools on (`--out`, `--hours`, `--seed`, `--force`). |
 | `nexus-workbench qc PATH` | Describe a local EDF file and check its signal quality in 30 s epochs (`--json` for the raw results). The recording must be 30 s or longer. |
 | `nexus-workbench doctor` | Check the install, the sign-in and the agent registrations. Being signed out is not a failure. |
@@ -135,7 +138,9 @@ Every command has `--help`.
 
 ### Errors and exit codes
 
-Exit codes: 0 ok, 1 failure, 2 usage error.
+Exit codes: 0 ok, 1 failure, 2 usage error. The `channels` commands add 3 (Workbench
+refused the change: the code and the reason are printed, with what to do) and 4 (sign-in,
+token scope or workspace access).
 
 Error messages carry a stable code in brackets, right after the first sentence, for
 example:
@@ -144,7 +149,7 @@ example:
 Not signed in (not_signed_in). Run `nexus-workbench login` in a terminal, then try again.
 ```
 
-With `--json` (on `whoami`, `recordings` and `qc`), an error is printed to stderr as one
+With `--json` (on `whoami`, `recordings`, `qc` and `channels`), an error is printed to stderr as one
 JSON object, and stdout stays empty:
 
 ```json

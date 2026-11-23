@@ -20,6 +20,9 @@ The first release.
   - `sample`: write a synthetic night (EDF, two hypnograms, two event files) to try the
     local tools on.
   - `qc`: describe a local EDF file and check its signal quality.
+  - `channels show | set | clear`: read and set the electrode sites of a recording's
+    channels through the agent API (`get_channels`, `set_channels`; staging). Exit 3 on
+    a refusal, 4 on sign-in or token scope.
   - Error messages with a stable code, and a JSON error object under `--json`.
 - MCP server `nexus` with nine read-only tools:
   - Workspace tools (need sign-in): `whoami`, `list_projects`, `list_recordings`,
