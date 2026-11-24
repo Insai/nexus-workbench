@@ -12,16 +12,19 @@ LOCAL_TESTS = Path(__file__).parent / "local"
 
 @pytest.fixture(autouse=True)
 def isolated(request: pytest.FixtureRequest) -> Iterator[Path | None]:
-    """Keep every CLI, client and server test away from the real config, agents and environment.
+    """Keep every CLI, client and server test away from the real config, agents, environment
+    and network.
 
     The local file tool tests in ``tests/local`` touch none of these and keep their own
     fixtures, so they are left alone.
     """
+    monkeypatch: pytest.MonkeyPatch = request.getfixturevalue("monkeypatch")
+    # No test may ask PyPI for a newer version; the update check tests switch it back on.
+    monkeypatch.setenv("NEXUS_WORKBENCH_NO_UPDATE_CHECK", "1")
     if Path(str(request.node.path)).is_relative_to(LOCAL_TESTS):
         yield None
         return
     tmp_path: Path = request.getfixturevalue("tmp_path")
-    monkeypatch: pytest.MonkeyPatch = request.getfixturevalue("monkeypatch")
     config = tmp_path / "config"
     monkeypatch.setattr(auth, "config_dir", lambda: config)
     for name in (

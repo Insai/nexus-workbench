@@ -42,6 +42,7 @@ VERSION_FILES = [
     "src/nexus_workbench/__init__.py",
     ".claude-plugin/plugin.json",
     ".codex-plugin/plugin.json",
+    "server.json",
     "CHANGELOG.md",
 ]
 
@@ -54,13 +55,13 @@ def _copy_version_files(dest: Path) -> Path:
     return dest
 
 
-def test_all_four_versions_in_sync() -> None:
+def test_all_versions_in_sync() -> None:
     found = bump_version.read_versions()
-    assert len(found) == 4
+    assert len(found) == 5
     assert set(found.values()) == {__version__}
 
 
-def test_bump_sets_all_four(tmp_path: Path) -> None:
+def test_bump_sets_every_file(tmp_path: Path) -> None:
     root = _copy_version_files(tmp_path)
     bump_version.write_version("9.8.7", root)
     assert set(bump_version.read_versions(root).values()) == {"9.8.7"}
@@ -70,6 +71,10 @@ def test_bump_sets_all_four(tmp_path: Path) -> None:
         after = json.loads((root / name).read_text(encoding="utf-8"))
         before["version"] = "9.8.7"
         assert after == before
+    before = json.loads((ROOT / "server.json").read_text(encoding="utf-8"))
+    after = json.loads((root / "server.json").read_text(encoding="utf-8"))
+    before["version"] = before["packages"][0]["version"] = "9.8.7"
+    assert after == before
 
 
 def test_check_release_refuses_dev_version(tmp_path: Path) -> None:

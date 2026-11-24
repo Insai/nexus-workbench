@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 from collections.abc import Callable
 from typing import Any
@@ -58,6 +59,10 @@ class WorkbenchError(Exception):
     code: str = "error"
     default_message: str = "Something went wrong talking to Workbench."
     default_hint: str = ""
+    #: The id the server gave this request, when it sent one (see :func:`request_id_of`).
+    request_id: str | None = None
+    #: Seconds the server asked the client to wait (``Retry-After``), when it said.
+    retry_after: float | None = None
 
     def __init__(
         self,
@@ -213,6 +218,10 @@ class ScopeRequired(WorkbenchError):
         **kwargs: Any,
     ) -> None:
         self.scope = scope if scope in sc.ALL else None
+        keep = [s for s in sc.normalise(have) if s not in (sc.READ, self.scope)]
+        #: The exact ``login`` command that makes a token with the missing scope, keeping the
+        #: scopes this token has (``None`` when the scope is not known).
+        self.login = sc.login_command([self.scope, *keep]) if self.scope else None
         if "message" not in kwargs and not args:
             kwargs["message"] = (
                 sc.cannot(self.scope, action)
@@ -221,7 +230,6 @@ class ScopeRequired(WorkbenchError):
             )
         if "hint" not in kwargs:
             if self.scope:
-                keep = [s for s in sc.normalise(have) if s not in (sc.READ, self.scope)]
                 extra = " ".join(f"`--scope {s}`" for s in keep)
                 kwargs["hint"] = f"Sign in again with `{sc.login_command([self.scope])}`" + (
                     f" (add {extra} to keep what this token has)." if keep else "."
@@ -424,6 +432,37 @@ def display_name(value: Any) -> str:
     return clean_name(value) or "unknown"
 
 
+#: Response headers that may carry an id for the request, in the order they are read.
+REQUEST_ID_HEADERS = ("X-Request-Id", "X-Cloud-Trace-Context")
+_REQUEST_ID = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+
+
+def request_id_of(response: httpx.Response) -> str | None:
+    """The id the server gave this request, or None when it sent none.
+
+    Read from ``X-Request-Id``, then ``X-Cloud-Trace-Context`` (the trace id before the
+    ``/``), then ``requestId`` in the JSON body or its ``error`` object. Only a short id of
+    plain characters is kept, so it is safe to print.
+    """
+    candidates: list[Any] = []
+    for name in REQUEST_ID_HEADERS:
+        value = response.headers.get(name)
+        if value:
+            candidates.append(value.split("/")[0].split(";")[0].strip())
+    try:
+        body = response.json()
+    except ValueError:
+        body = None
+    if isinstance(body, dict):
+        candidates.append(body.get("requestId"))
+        if isinstance(body.get("error"), dict):
+            candidates.append(body["error"].get("requestId"))
+    for value in candidates:
+        if isinstance(value, str) and _REQUEST_ID.match(value):
+            return value
+    return None
+
+
 def error_from_response(
     response: httpx.Response,
     *,
@@ -434,8 +473,23 @@ def error_from_response(
     """Map a non-200 response to a typed error (contract 3.1, 5.1 and 7.3).
 
     ``action`` is the agent API action that was sent and ``have`` the token's scopes when
-    known, so the messages can be specific.
+    known, so the messages can be specific. The error carries the request id when the
+    server sent one.
     """
+    error = _error_from_response(response, login_endpoint=login_endpoint, action=action, have=have)
+    error.request_id = request_id_of(response)
+    if error.retry_after is None:
+        error.retry_after = _parse_retry_after(response.headers.get("Retry-After"))
+    return error
+
+
+def _error_from_response(
+    response: httpx.Response,
+    *,
+    login_endpoint: bool,
+    action: str | None,
+    have: tuple[str, ...] | None,
+) -> WorkbenchError:
     status = response.status_code
     body: Any = None
     try:

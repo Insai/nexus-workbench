@@ -23,8 +23,9 @@ from mcp.types import CallToolResult, TextContent, ToolAnnotations
 from pydantic import Field, TypeAdapter, ValidationError
 from typing_extensions import NotRequired, TypedDict
 
-from . import __version__, auth, bridge
+from . import __version__, auth, bridge, prompts, update_check
 from . import marks as mk
+from . import mcp_errors as errors
 from . import scopes as sc
 from .client import (
     SAFE_TEXT_LIMIT,
@@ -409,9 +410,12 @@ def register(server: MCPServer, specs: list[ToolSpec]) -> None:
 ClientFactory = Callable[[], WorkbenchClient]
 
 
-def tool_error(message: str) -> CallToolResult:
-    """A normal tool error result: plain text for the agent, no stack trace."""
-    return CallToolResult(content=[TextContent(type="text", text=message)], is_error=True)
+#: A tool error result: a message for a person, and a structured copy with the contract
+#: code, the steps that fix it and the tools that still work (see :mod:`.mcp_errors`).
+tool_error = errors.tool_error
+TOOLS_FAILED = (
+    "Something went wrong in the Workbench tools. Run `nexus-workbench doctor` in a terminal."
+)
 
 
 def _call(factory: ClientFactory, action: str, **args: Any) -> Any:
@@ -423,21 +427,18 @@ def _call(factory: ClientFactory, action: str, **args: Any) -> Any:
     try:
         client = factory()
     except WorkbenchError as exc:
-        return tool_error(str(exc))
+        return errors.from_exception(exc)
     try:
         return client.call(action, **args)
     except NotSignedIn:
-        return tool_error(NOT_SIGNED_IN)
+        return errors.from_exception(NotSignedIn(), NOT_SIGNED_IN)
     except ScopeRequired as exc:
-        return tool_error(exc.agent_text)
+        return errors.from_exception(exc, exc.agent_text)
     except WorkbenchError as exc:
-        return tool_error(str(exc))
+        return errors.from_exception(exc)
     except Exception:
         logger.exception("unexpected error in %s", action)
-        return tool_error(
-            "Something went wrong in the Workbench tools. "
-            "Run `nexus-workbench doctor` in a terminal."
-        )
+        return tool_error(TOOLS_FAILED, "internal")
     finally:
         client.close()
 
@@ -535,7 +536,7 @@ def _workspace_result(result: Any, shape: Any) -> Any:
     try:
         return _compact(structured)
     except ValueError:  # NaN or infinity in a number: no JSON result can carry it
-        return tool_error(SERVER_NOT_UNDERSTOOD)
+        return tool_error(SERVER_NOT_UNDERSTOOD, "unexpected_response")
 
 
 MAX_MEMBERS = 1000
@@ -735,7 +736,7 @@ def workspace_tools(factory: ClientFactory) -> list[ToolSpec]:
         try:
             checked = mk.check_marks(marks)
         except mk.MarksError as exc:
-            return tool_error(f"{exc} Nothing was written.")
+            return tool_error(f"{exc} Nothing was written.", "invalid_argument")
         result = _call(
             factory,
             "propose_marks",
@@ -792,7 +793,8 @@ def workspace_tools(factory: ClientFactory) -> list[ToolSpec]:
     ) -> ReviewTaskResult:
         if len(set(ids)) != len(ids):
             return tool_error(
-                "ids lists a recording twice. Each recording once. Nothing was given."
+                "ids lists a recording twice. Each recording once. Nothing was given.",
+                "invalid_argument",
             )
         result = _call(
             factory,
@@ -1336,11 +1338,11 @@ def _local(name: str, **args: Any) -> Any:
     try:
         result = getattr(api, name)(**args)
     except LocalToolError as exc:
-        return tool_error(exc.message)
+        return tool_error(exc.message, "local_file", how_to_fix=[], local_alternative=[])
     except Exception as exc:
         # Only the exception type is logged: messages can hold paths or file contents.
         logger.error("unexpected error in %s: %s", name, type(exc).__name__)
-        return tool_error(LOCAL_FAILED)
+        return tool_error(LOCAL_FAILED, "local_unexpected", how_to_fix=[], local_alternative=[])
     return _compact(result)
 
 
@@ -1376,21 +1378,20 @@ def _workspace_side(factory: ClientFactory, fetch: Callable[[WorkbenchClient], A
     try:
         client = factory()
     except WorkbenchError as exc:
-        return tool_error(str(exc))
+        return errors.from_exception(exc)
     try:
         return fetch(client)
     except bridge.BridgeError as exc:
-        return tool_error(str(exc))
+        return tool_error(str(exc), exc.code)
     except NotSignedIn:
-        return tool_error(NOT_SIGNED_IN)
+        return errors.from_exception(NotSignedIn(), NOT_SIGNED_IN)
+    except ScopeRequired as exc:
+        return errors.from_exception(exc, exc.agent_text)
     except WorkbenchError as exc:
-        return tool_error(str(exc))
+        return errors.from_exception(exc)
     except Exception:
         logger.exception("unexpected error reading the workspace side")
-        return tool_error(
-            "Something went wrong in the Workbench tools. "
-            "Run `nexus-workbench doctor` in a terminal."
-        )
+        return tool_error(TOOLS_FAILED, "internal")
     finally:
         client.close()
 
@@ -1404,12 +1405,15 @@ def _sides(
         missing = [n for n, v in ((a, first), (b, second)) if v is None]
         if missing:
             return -1, tool_error(
-                f"{missing[0]} is required, unless recording_id gives that side from the workspace."
+                f"{missing[0]} is required, unless recording_id gives that side from the "
+                "workspace.",
+                "invalid_argument",
             )
         return -1, None
     if (first is None) == (second is None):
         return -1, tool_error(
-            f"With recording_id, give exactly one of {a} and {b}; the workspace fills the other."
+            f"With recording_id, give exactly one of {a} and {b}; the workspace fills the other.",
+            "invalid_argument",
         )
     return (0 if first is None else 1), None
 
@@ -1833,17 +1837,34 @@ class NexusServer(MCPServer):
 
     An argument the caller got wrong names the argument. A result the output shape rejects
     (a server reply this version does not understand) says to update, and echoes nothing.
+
+    The first tool call starts the update check in the background; once a newer version is
+    known, one tool result of this process carries the notice as an extra text block.
     """
 
+    notifier: update_check.Notifier | None = None
+
     async def call_tool(self, name: str, arguments: dict[str, Any], context: Any = None) -> Any:
+        if self.notifier is not None:
+            self.notifier.start()
+        result = await self._call_tool(name, arguments, context)
+        notice = self.notifier.take() if self.notifier is not None else None
+        if notice and isinstance(result, CallToolResult):
+            result.content.append(TextContent(type="text", text=update_check.agent_notice(notice)))
+        return result
+
+    async def _call_tool(self, name: str, arguments: dict[str, Any], context: Any) -> Any:
         try:
             return await super().call_tool(name, arguments, context)
         except ToolError as exc:
             cause = exc.__cause__
             if isinstance(cause, ValidationError):
                 if isinstance(exc, UnexpectedToolError) or not self._names_arguments(name, cause):
-                    return tool_error(SERVER_NOT_UNDERSTOOD)
-                return tool_error(_argument_error(cause, self._tool_input_schema(name), arguments))
+                    return tool_error(SERVER_NOT_UNDERSTOOD, "unexpected_response")
+                return tool_error(
+                    _argument_error(cause, self._tool_input_schema(name), arguments),
+                    "invalid_argument",
+                )
             raise
 
     def _names_arguments(self, name: str, exc: ValidationError) -> bool:
@@ -1878,9 +1899,15 @@ def all_tools(factory: ClientFactory) -> list[ToolSpec]:
     return workspace_tools(factory) + local_tools(factory)
 
 
-def build_server(client_factory: ClientFactory | None = None, *, scopes: Any = SAVED) -> MCPServer:
+def build_server(
+    client_factory: ClientFactory | None = None,
+    *,
+    scopes: Any = SAVED,
+    notifier: update_check.Notifier | None = None,
+) -> MCPServer:
     """The MCP server. ``scopes`` (default: the saved token's) choose which detail and write
-    tools are listed; ``None`` means unknown, which lists the read and local tools only."""
+    tools are listed; ``None`` means unknown, which lists the read and local tools only.
+    ``notifier`` runs the update check (default: one that asks PyPI, unless turned off)."""
     factory = client_factory or default_client_factory
     known = saved_scopes() if scopes is SAVED else (sc.normalise(scopes) if scopes else None)
     specs = [spec for spec in all_tools(factory) if spec.listed(known)]
@@ -1892,6 +1919,8 @@ def build_server(client_factory: ClientFactory | None = None, *, scopes: Any = S
         log_level="WARNING",
     )
     register(server, specs)
+    prompts.register(server)
+    server.notifier = notifier or update_check.Notifier()
     return server
 
 

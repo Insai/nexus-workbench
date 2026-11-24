@@ -24,6 +24,8 @@ ROOT = Path(__file__).resolve().parents[1]
 PYPROJECT = "pyproject.toml"
 INIT = "src/nexus_workbench/__init__.py"
 MANIFESTS = (".claude-plugin/plugin.json", ".codex-plugin/plugin.json")
+#: The MCP Registry entry: the server's version and its PyPI package's version.
+SERVER_JSON = "server.json"
 CHANGELOG = "CHANGELOG.md"
 
 # The version lines in the two Python-side files.
@@ -39,7 +41,8 @@ ANY_VERSION = re.compile(r"^\d+\.\d+\.\d+((a|b|rc)\d+)?(\.post\d+)?(\.dev\d+)?$"
 
 
 def read_versions(root: Path = ROOT) -> dict[str, str]:
-    """Return the version written in each of the four files."""
+    """Return the version written in each file. server.json counts once and must agree with
+    itself."""
     found: dict[str, str] = {}
     for name, pattern in PATTERNS.items():
         text = (root / name).read_text(encoding="utf-8")
@@ -50,11 +53,17 @@ def read_versions(root: Path = ROOT) -> dict[str, str]:
     for name in MANIFESTS:
         data = json.loads((root / name).read_text(encoding="utf-8"))
         found[name] = str(data.get("version", ""))
+    data = json.loads((root / SERVER_JSON).read_text(encoding="utf-8"))
+    versions = {str(data.get("version", ""))}
+    versions |= {str(p.get("version", "")) for p in data.get("packages") or []}
+    if len(versions) != 1:
+        raise SystemExit(f"{SERVER_JSON}: the server and package versions differ: {versions}.")
+    found[SERVER_JSON] = versions.pop()
     return found
 
 
 def write_version(version: str, root: Path = ROOT) -> None:
-    """Write the version into all four files."""
+    """Write the version into every file."""
     for name, pattern in PATTERNS.items():
         path = root / name
         text = path.read_text(encoding="utf-8")
@@ -62,15 +71,15 @@ def write_version(version: str, root: Path = ROOT) -> None:
         if count != 1:
             raise SystemExit(f"{name}: expected one version line, found {count}.")
         path.write_text(new_text, encoding="utf-8")
-    for name in MANIFESTS:
+    for name, expected in (*((m, 1) for m in MANIFESTS), (SERVER_JSON, 2)):
         path = root / name
         # Replace the value in place so the rest of the file keeps its layout.
         text = path.read_text(encoding="utf-8")
         new_text, count = re.subn(
             r'("version"\s*:\s*")[^"]*(")', lambda m: f"{m.group(1)}{version}{m.group(2)}", text
         )
-        if count != 1:
-            raise SystemExit(f"{name}: expected one version field, found {count}.")
+        if count != expected:
+            raise SystemExit(f"{name}: expected {expected} version fields, found {count}.")
         path.write_text(new_text, encoding="utf-8")
 
 
@@ -129,14 +138,14 @@ def main(argv: list[str] | None = None) -> int:
             for problem in problems:
                 print(f"  - {problem}", file=sys.stderr)
             return 1
-        print(f"{args.check} matches the version in all four files and the changelog.")
+        print(f"{args.check} matches the version in every file and the changelog.")
         return 0
 
     if not ANY_VERSION.match(args.version):
         print(f"{args.version!r} is not a version like 1.2.3 or 1.2.3.dev0.", file=sys.stderr)
         return 2
     write_version(args.version)
-    print(f"Set version {args.version} in {', '.join((PYPROJECT, INIT, *MANIFESTS))}.")
+    print(f"Set version {args.version} in {', '.join((PYPROJECT, INIT, *MANIFESTS, SERVER_JSON))}.")
     return 0
 
 
