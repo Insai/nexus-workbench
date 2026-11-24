@@ -117,3 +117,17 @@ def test_changelog_has_section_for_current_version() -> None:
     release = __version__.split(".dev")[0]
     text = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     assert changelog_notes.section(release, text)
+
+
+def test_insai_package_is_consistent() -> None:
+    """The `insai` package: one version in both places, and it installs nexus-workbench."""
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1] / "packages" / "insai"
+    pyproject = (root / "pyproject.toml").read_text()
+    init = (root / "src" / "insai" / "__init__.py").read_text()
+    version = re.search(r'^version = "([^"]+)"', pyproject, re.M).group(1)
+    assert re.search(r'__version__ = "([^"]+)"', init).group(1) == version
+    assert re.search(r'^dependencies = \["nexus-workbench[^"]*"\]', pyproject, re.M)
+    assert 'insai = "nexus_workbench.cli:main"' in pyproject
