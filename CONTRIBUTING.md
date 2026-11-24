@@ -109,10 +109,10 @@ It checks that the tag matches the version in the package, runs the checks, buil
 publishes to PyPI and creates a GitHub release with the changelog section as notes and
 the built files attached.
 
-The version is written in four places: `pyproject.toml`,
-`src/nexus_workbench/__init__.py`, `.claude-plugin/plugin.json` and
-`.codex-plugin/plugin.json`. `scripts/bump_version.py` sets all four, and a test fails
-if they differ.
+The version is written in five places: `pyproject.toml`,
+`src/nexus_workbench/__init__.py`, `.claude-plugin/plugin.json`,
+`.codex-plugin/plugin.json` and `server.json` (the MCP Registry entry, twice).
+`scripts/bump_version.py` sets them all, and a test fails if they differ.
 
 1. Set the version:
 
@@ -141,7 +141,7 @@ if they differ.
    `python scripts/bump_version.py 1.2.4.dev0`, and add a new unreleased section to the
    changelog.
 
-The release stops before publishing if any of the four versions differs from the tag,
+The release stops before publishing if any of the versions differs from the tag,
 if a version contains `dev`, or if the changelog section is missing or still says
 unreleased.
 

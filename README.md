@@ -1,14 +1,17 @@
 # nexus-workbench
 
+<!-- mcp-name: io.github.Insai/nexus-workbench -->
+
 One command adds Insai Workbench to Claude Code or Codex: `uvx nexus-workbench setup`.
-It gives your agent an MCP server named `nexus` and thirteen skills for sleep-EEG
-research. Six tools work on EDF files on your own computer, with no account. The others
+It gives your agent an MCP server named `nexus` with 22 tools and four prompts, and
+thirteen skills for sleep-EEG research. Six tools work on EDF files on your own computer, with no account. The others
 read your Workbench workspace, where sleep researchers review EEG recordings, and, when
 you ask for it at sign-in, propose marks for review, give review tasks or ask for an
 analysis.
 
 Local tools send nothing anywhere. Workspace tools send only your token and the request
-to the Workbench API over HTTPS. There is no telemetry.
+to the Workbench API over HTTPS. Once a day at most, the server asks PyPI whether a newer
+version exists (see [Update](#update)). There is no telemetry.
 
 A token reads, and nothing more, unless you ask for more scopes when you sign in. See
 [Writing to Workbench](#writing-to-workbench).
@@ -33,7 +36,7 @@ and Codex, copies the skills and signs you in. See [What setup does](#what-setup
 The command is also installed as `nexus`, a shorter name for the same thing. Agent
 configs always use `nexus-workbench`.
 
-## Try it in 30 seconds (no account)
+## Try it in 60 seconds (no account)
 
 ```sh
 uvx nexus-workbench setup --no-login
@@ -41,13 +44,22 @@ nexus-workbench sample
 nexus-workbench qc nexus-sample/sample_night.edf
 ```
 
-`sample` writes a synthetic night into `./nexus-sample/`. Nothing in it comes from a
-recording. `qc` prints the file's format and length, and one row per channel with the
-share of ok, suspect, flat and railed epochs.
+`sample` writes a synthetic night into `./nexus-sample/`: an EDF file, two scorers'
+hypnograms and two event files. Nothing in it comes from a recording. `qc` prints the
+file's format and length, and one row per channel with the share of ok, suspect, flat and
+railed epochs.
 
-Then in Claude Code or Codex, ask:
+Then start Claude Code or Codex in the same folder and ask:
 
 > Check the signal quality of ./nexus-sample/sample_night.edf
+
+> Compare ./nexus-sample/sample_hypnogram.csv with ./nexus-sample/sample_hypnogram_scorer2.txt
+
+> Compute band power per sleep stage for ./nexus-sample/sample_night.edf with the hypnogram ./nexus-sample/sample_hypnogram.csv
+
+All three use the local tools, so they work signed out and send nothing anywhere. The
+same three are also MCP prompts (`qc_edf_file`, `scorer_agreement`,
+`band_power_by_stage`); see [Prompts](#prompts).
 
 ## What setup does
 
@@ -222,6 +234,10 @@ through the API; open it in Workbench) and `not_available` (`request_analysis`, 
 
 ## Tools
 
+The server has 22 tools: eight read tools, four detail tools, four write tools and six
+local tools. A token lists the read and local tools, and the detail and write tools its
+scopes cover.
+
 Agent API version 1.1 (the detail and write tools, and the read tools `list_members`,
 `list_tasks`, `list_nights` and `list_layers`) ships with this release. Against an older
 server that does not offer them, they answer "This Workbench server does not offer ...
@@ -305,6 +321,39 @@ In Claude Code or Codex, ask for example:
 - "Compare the candidate events ./nexus-sample/sample_events_candidate.json with the
   reference ./nexus-sample/sample_events_reference.csv for an 8 hour recording"
   (`compare_events`)
+
+### Prompts
+
+The server also offers four prompts, which clients show as starters or slash commands.
+Each names the tools to use.
+
+| Prompt | Does | Needs |
+|---|---|---|
+| `qc_edf_file` | Channels and signal quality of an EDF file (`inspect_edf`, `check_signal_quality`). | Nothing |
+| `scorer_agreement` | Agreement and kappa of two hypnograms of one night (`compare_hypnograms`). | Nothing |
+| `band_power_by_stage` | Band power per sleep stage from an EDF file and its hypnogram (`check_signal_quality`, `compute_band_power`). | Nothing |
+| `review_workspace_recordings` | A read-only overview of your workspace's recordings: counts, machine staging, quality grades. | Sign-in |
+
+The first three default to the files `nexus-workbench sample` writes.
+
+### When a tool refuses
+
+A tool that cannot run returns an error with a sentence for you and the same error as
+structured data for the agent:
+
+```json
+{"ok": false, "code": "not_signed_in", "reason": "Not signed in.",
+ "howToFix": ["nexus-workbench login"],
+ "localAlternative": ["inspect_edf", "check_signal_quality", "compute_band_power",
+                      "compare_hypnograms", "compare_events", "preprocess"],
+ "requestId": null, "retryAfter": null}
+```
+
+`code` is one of the codes in [Errors and exit codes](#errors-and-exit-codes). `howToFix`
+lists the steps; a command in it is for you to run in your own terminal. Never paste a
+token into the chat. `localAlternative` names the tools that still work, for example when
+you are signed out or agent access is not on yet. `retryAfter` is the wait in seconds
+after a rate limit, and `requestId` the server's id for the request when it sends one.
 
 ## Writing to Workbench
 
@@ -405,6 +454,7 @@ See [SECURITY.md](SECURITY.md) to report a vulnerability.
 | `NEXUS_KEYRING` | `1` to store new tokens in the system keyring. |
 | `NEXUS_WORKBENCH_CONFIG_DIR` | The folder for the credentials file, instead of the user config folder (see [Privacy](#privacy)). `setup` passes it on to the MCP server. |
 | `NEXUS_DEBUG` | `1` to print the traceback when `qc` or `preprocess` hits an unexpected error. |
+| `NEXUS_WORKBENCH_NO_UPDATE_CHECK` | `1` to turn off the check for a newer version (see [Update](#update)). |
 | `NO_COLOR` | Set to anything to turn off the bold table headers. |
 
 ## Update
@@ -420,6 +470,12 @@ changed.
 
 Plugin users update the plugin in their agent instead, for example
 `claude plugin update nexus-workbench@insai`.
+
+Once a day at most, the MCP server and `doctor` ask PyPI for the newest version of
+`nexus-workbench`, with a two-second timeout, and keep the answer in your user cache
+folder. When a newer one exists, one tool result per session and `doctor` say so. The
+request carries nothing about you or your files, and when it fails (offline, for
+example) nothing is shown. Set `NEXUS_WORKBENCH_NO_UPDATE_CHECK=1` to turn it off.
 
 ## Troubleshooting
 

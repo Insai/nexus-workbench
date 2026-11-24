@@ -10,7 +10,7 @@ import anyio
 import pytest
 from mcp import Client
 
-from nexus_workbench import auth, mcp_server
+from nexus_workbench import auth, mcp_errors, mcp_server
 from nexus_workbench import client as c
 from nexus_workbench import scopes as sc
 from nexus_workbench.local.sample import make_sample_night
@@ -219,8 +219,12 @@ def test_scope_refusal_through_a_tool_names_the_login_command(api: FakeAPI) -> N
     assert text_of(result) == (
         "This token cannot read per-epoch and per-event detail. "
         "Sign in again with `nexus-workbench login --scope detail`, "
-        "then restart the agent session."
+        "then restart the agent session. " + mcp_errors.RUN_IT_YOURSELF
     )
+    error = result.structured_content
+    assert error["code"] == "scope_required"
+    assert error["howToFix"] == ["nexus-workbench login --scope detail", mcp_errors.RESTART]
+    assert error["localAlternative"] == []
 
 
 @pytest.mark.parametrize(
@@ -243,7 +247,8 @@ def test_write_scope_refusal_names_the_command_and_the_restart(
     assert result.is_error is True
     text = text_of(result)
     assert f"`nexus-workbench login --scope {scope}`" in text
-    assert text.endswith("then restart the agent session.")
+    assert "then restart the agent session." in text
+    assert result.structured_content["howToFix"][0] == f"nexus-workbench login --scope {scope}"
     description = listing(server)[0][tool].description or ""
     assert f"`nexus-workbench login --scope {scope}`" in description
     assert "then restart the agent session" in description

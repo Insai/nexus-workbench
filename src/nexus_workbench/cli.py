@@ -23,7 +23,7 @@ import traceback
 from collections.abc import Sequence
 from typing import Any
 
-from . import __version__, auth
+from . import __version__, auth, update_check
 from . import scopes as sc
 from .client import (
     REQUEST_ACCESS_HINT,
@@ -79,7 +79,15 @@ def _fail(code: str, message: str, hint: str = "", *, as_json: bool = False) -> 
 
 
 def _fail_workbench(exc: WorkbenchError, *, as_json: bool = False) -> None:
-    _fail(exc.code, exc.message, exc.hint, as_json=as_json)
+    """Print a Workbench error, with the request id when the server sent one."""
+    if exc.request_id is None:
+        _fail(exc.code, exc.message, exc.hint, as_json=as_json)
+    elif as_json:
+        text = f"{exc.message.strip()} {exc.hint}".strip()
+        error = {"code": exc.code, "message": text, "requestId": exc.request_id}
+        _err(json.dumps({"error": error}, ensure_ascii=False))
+    else:
+        _err(f"{with_code(exc.code, exc.message, exc.hint)} Request id: {exc.request_id}.")
 
 
 def _debug() -> bool:
@@ -466,6 +474,9 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             print(
                 f"{label}: {exe}; MCP server `nexus` not registered. Run `nexus-workbench setup`."
             )
+    notice = update_check.check()
+    if notice:
+        print(f"Update: {notice} Run `{update_check.UPGRADE}`, then restart your agent.")
     if not ok:
         _err("Some checks failed. See above.")  # after the report, even when piped
     return OK if ok else FAILURE

@@ -12,7 +12,7 @@ import pytest
 from mcp import Client
 
 from nexus_workbench import client as c
-from nexus_workbench import mcp_server
+from nexus_workbench import mcp_errors, mcp_server
 from tests.fake_api import API_BASE, FakeAPI, make_token, sample_data
 
 WORKSPACE_TOOLS = {"whoami", "list_projects", "list_recordings", "get_recording"}
@@ -48,7 +48,12 @@ def run(coro_fn: Any) -> Any:
 
 
 def text_of(result: Any) -> str:
-    return "\n".join(block.text for block in result.content if getattr(block, "text", None))
+    """The text for a person. An error's second block is its structured copy as JSON."""
+    texts = [block.text for block in result.content if getattr(block, "text", None)]
+    if result.is_error:
+        assert json.loads(texts[1]) == result.structured_content
+        return texts[0]
+    return "\n".join(texts)
 
 
 @pytest.fixture
@@ -327,8 +332,19 @@ def test_signed_out_message(api: FakeAPI) -> None:
     for result in run(go):
         assert result.is_error is True
         assert text_of(result) == (
-            "Not signed in. Run `nexus-workbench login` in a terminal, then try again."
+            "Not signed in. Run `nexus-workbench login` in a terminal, then try again. "
+            + mcp_errors.RUN_IT_YOURSELF
         )
+        assert "paste" not in text_of(result)
+        assert result.structured_content == {
+            "ok": False,
+            "code": "not_signed_in",
+            "reason": "Not signed in.",
+            "howToFix": ["nexus-workbench login"],
+            "localAlternative": list(mcp_errors.LOCAL_TOOLS),
+            "requestId": None,
+            "retryAfter": None,
+        }
     assert api.requests == []
 
 
@@ -413,6 +429,7 @@ def test_local_tool_seam_registers_extra_specs(monkeypatch: pytest.MonkeyPatch) 
 
 def _child_env(tmp_path: Path) -> dict[str, str]:
     env = {k: v for k, v in os.environ.items() if not k.startswith("NEXUS_")}
+    env["NEXUS_WORKBENCH_NO_UPDATE_CHECK"] = "1"
     env["HOME"] = str(tmp_path / "home")
     env["XDG_CONFIG_HOME"] = str(tmp_path / "xdg")
     env["APPDATA"] = str(tmp_path / "appdata")

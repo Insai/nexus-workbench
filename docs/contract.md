@@ -226,7 +226,14 @@ Every command-line error message carries its code in brackets, right after
 the first sentence and before the advice, like
 `Not signed in (not_signed_in). Run ...`. With `--json` it prints the error to stderr
 as `{"error": {"code": "<code>", "message": "<text>"}}` and exits non-zero.
-The MCP tools return a message for a person, without the code.
+The MCP tools return a message for a person and, beside it, the same error as
+structured content: `{"ok": false, "code", "reason", "howToFix", "localAlternative",
+"requestId", "retryAfter"}`. `code` is the code; `howToFix` the steps, a command exactly
+as the person types it in their own terminal; `localAlternative` the local tools that
+still work (empty when none apply); `requestId` the id the server gave the request when a
+response header (`X-Request-Id`, `X-Cloud-Trace-Context`) or the body (`requestId`)
+carries one, else null; `retryAfter` the seconds of `Retry-After`, else null. The
+command line prints the request id after the message when there is one.
 The codes are the server codes in section 3.1 and 5.1, plus these, which the
 client sets itself and the server never sends:
 

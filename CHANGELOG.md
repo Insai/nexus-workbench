@@ -4,6 +4,33 @@ All notable changes to this package are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.2.1] - 2026-11-24
+
+Small changes that help an agent on its first try.
+
+### Added
+
+- When a tool cannot run, its error now also comes as structured data: a stable `code`
+  from docs/contract.md, the reason, `howToFix` (the exact commands to run in your own
+  terminal, such as `nexus-workbench login --scope marks:write`), `localAlternative` (the
+  local tools that still work, for example when you are signed out or agent access is not
+  on yet), `retryAfter` after a rate limit, and `requestId` when the server sends one. The
+  sentence for you is still there. No step ever asks for a token in the chat.
+- Four MCP prompts: `qc_edf_file`, `scorer_agreement`, `band_power_by_stage` and
+  `review_workspace_recordings`. The first three work signed out on the files
+  `nexus-workbench sample` writes.
+- A one-line notice when a newer version is on PyPI: in one tool result per session and in
+  `doctor`. It checks at most once a day, waits at most two seconds, and says nothing when
+  offline. `NEXUS_WORKBENCH_NO_UPDATE_CHECK=1` turns it off.
+- `server.json` for the MCP Registry and `llms-install.md` with install steps for agents.
+- "Try it in 60 seconds" in the README: three things to ask that work signed out.
+
+### Changed
+
+- The command line prints the server's request id after an error message when there is
+  one (with `--json`, as `requestId`).
+- `scripts/bump_version.py` also sets the version in `server.json`.
+
 ## [0.2.0] - 2026-11-24
 
 The first public release. It connects Claude Code and Codex to an Insai Workbench
@@ -63,4 +90,5 @@ have switched on agent writes.
   GitHub release gets the changelog section as notes. `scripts/bump_version.py` sets the
   version in all four places it is written.
 
+[0.2.1]: https://github.com/Insai/nexus-workbench/releases/tag/v0.2.1
 [0.2.0]: https://github.com/Insai/nexus-workbench/releases/tag/v0.2.0

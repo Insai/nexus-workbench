@@ -25,7 +25,16 @@ EVENTS_PER_PAGE = 1000
 
 
 class BridgeError(Exception):
-    """The workspace cannot supply this side of a comparison. The message says why."""
+    """The workspace cannot supply this side of a comparison. The message says why.
+
+    ``code`` is the contract code a tool error carries: ``invalid_argument`` when that side
+    cannot come from this recording, ``unexpected_response`` for a reply this version does
+    not understand.
+    """
+
+    def __init__(self, message: str, *, code: str = "invalid_argument") -> None:
+        self.code = code
+        super().__init__(message)
 
 
 def hidden_message(what: str) -> str:
@@ -40,7 +49,8 @@ def split_stages(stages: str) -> list[str]:
     if not isinstance(stages, str) or not STAGES_SHAPE.match(stages):
         raise BridgeError(
             "The workspace sent a stage sequence this version does not understand. "
-            "Update with `uv tool upgrade nexus-workbench`, then try again."
+            "Update with `uv tool upgrade nexus-workbench`, then try again.",
+            code="unexpected_response",
         )
     return STAGE_CODE.findall(stages)
 
@@ -63,7 +73,8 @@ def stages_text(result: dict[str, Any]) -> tuple[str, float]:
     if isinstance(n, int) and n != len(codes):
         raise BridgeError(
             f"The workspace said {n} epochs but sent {len(codes)} stage codes. "
-            "Update with `uv tool upgrade nexus-workbench`, then try again."
+            "Update with `uv tool upgrade nexus-workbench`, then try again.",
+            code="unexpected_response",
         )
     epoch = result.get("epochSec", 30)
     if not isinstance(epoch, (int, float)) or isinstance(epoch, bool) or epoch <= 0:
@@ -92,7 +103,8 @@ def fetch_events(
         if not isinstance(got, list):
             raise BridgeError(
                 "The workspace sent events this version does not understand. "
-                "Update with `uv tool upgrade nexus-workbench`, then try again."
+                "Update with `uv tool upgrade nexus-workbench`, then try again.",
+                code="unexpected_response",
             )
         rows.extend(e for e in got if isinstance(e, dict))
         cursor = page.get("nextCursor")

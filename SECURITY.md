@@ -33,7 +33,10 @@ Only the latest release gets security fixes. Update with
 - **The network.** The local tools make no network calls. The workspace tools and sign-in
   call the Workbench API over HTTPS only. They send your token in the `Authorization`
   header and the request itself. Sign-in also sends this computer's name and the package
-  version. Nothing else is sent anywhere.
+  version. Once a day at most, the MCP server and `doctor` ask PyPI's public JSON API
+  for the newest `nexus-workbench` version (a plain GET with the package version in the
+  user agent); `NEXUS_WORKBENCH_NO_UPDATE_CHECK=1` turns that off. Nothing else is sent
+  anywhere.
 - **No telemetry.** The package collects no usage data, crash reports or analytics.
 - **Your agent's config.** `setup` registers the MCP server with `claude mcp add` and
   `codex mcp add`, and copies skill folders (each marked with a `.nexus-workbench` file)

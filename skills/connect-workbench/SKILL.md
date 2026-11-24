@@ -137,8 +137,13 @@ work without it in the meantime.
 
 ## When a workspace tool refuses
 
-The tools return a message for a person, not an error code. Match on the meaning of the
-message, not the exact words; the wording can change between versions.
+A refusal comes as a message for a person and, beside it, structured data: a stable
+`code` (for example `not_signed_in`, `scope_required`, `early_access_required`),
+`howToFix` (the steps; a command in it is exact, for the researcher to run in their own
+terminal), `localAlternative` (local tools that still work), `retryAfter` and `requestId`.
+Prefer the `code` and `howToFix` when you have them. Never ask the researcher to paste a
+token into the chat. Otherwise match on the meaning of the message, not the exact words;
+the wording can change between versions.
 
 | The message says | What it means | What to do |
 |---|---|---|
