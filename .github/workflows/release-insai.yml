@@ -1,0 +1,68 @@
+name: Release insai
+
+# The `insai` package (packages/insai): it installs nexus-workbench and adds the `insai`
+# command. Push a tag like insai-v0.0.1 to build and publish it to PyPI. Run it by hand
+# (workflow_dispatch) for a dry build that publishes nothing.
+
+on:
+  push:
+    tags:
+      - "insai-v*.*.*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-insai-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build and check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          python-version: "3.12"
+          enable-cache: false
+      - name: Check the tag matches the version
+        if: github.event_name == 'push'
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version=$(python3 -c "import tomllib;print(tomllib.load(open('packages/insai/pyproject.toml','rb'))['project']['version'])")
+          test "$TAG" = "insai-v$version" || { echo "::error::tag $TAG does not match insai $version"; exit 1; }
+      - name: Build
+        run: uv build packages/insai --out-dir dist
+      # Needs nexus-workbench on PyPI already: publish it (tag vX.Y.Z) before insai.
+      - name: The insai command runs
+        run: uvx --from "$(ls dist/*.whl)" insai --version
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-insai
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/insai-v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: pypi
+      url: https://pypi.org/p/insai
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist-insai
+          path: dist/
+      - name: Publish with trusted publishing
+        uses: pypa/gh-action-pypi-publish@v1.14.3

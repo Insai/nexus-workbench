@@ -165,7 +165,21 @@ PyPI uses trusted publishing, so there is no token to store.
    - Required reviewers: add at least one maintainer, so every upload waits for a
      person to approve it.
    - Deployment branches and tags: choose selected branches and tags, and add the tag
-     rule `v*.*.*`.
+     rules `v*.*.*` and `insai-v*.*.*`.
+
+### The `insai` package
+
+`packages/insai` is a small package that installs `nexus-workbench` and adds the `insai`
+command (the same CLI). Pushing a tag like `insai-v0.0.1` runs
+[.github/workflows/release-insai.yml](.github/workflows/release-insai.yml), which builds it,
+checks the `insai` command runs, and publishes it through the same `pypi` environment.
+
+- Its version lives only in `packages/insai/pyproject.toml` and
+  `packages/insai/src/insai/__init__.py`.
+- Publish `nexus-workbench` first: `insai` depends on it, and the release checks the
+  command runs against the version on PyPI.
+- PyPI needs a second trusted publisher: project `insai`, owner `Insai`, repository
+  `nexus-workbench`, workflow `release-insai.yml`, environment `pypi`.
 
 ## Report a problem
 

@@ -117,3 +117,18 @@ def test_changelog_has_section_for_current_version() -> None:
     release = __version__.split(".dev")[0]
     text = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     assert changelog_notes.section(release, text)
+
+
+def test_insai_package_is_consistent() -> None:
+    """The `insai` package: one version in both places, and it installs nexus-workbench."""
+    import re
+    from pathlib import Path
+
+    import tomllib
+
+    root = Path(__file__).resolve().parents[1] / "packages" / "insai"
+    project = tomllib.loads((root / "pyproject.toml").read_text())["project"]
+    init = (root / "src" / "insai" / "__init__.py").read_text()
+    assert re.search(r'__version__ = "([^"]+)"', init).group(1) == project["version"]
+    assert any(d.startswith("nexus-workbench") for d in project["dependencies"])
+    assert project["scripts"]["insai"] == "nexus_workbench.cli:main"
