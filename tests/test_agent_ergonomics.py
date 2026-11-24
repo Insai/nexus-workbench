@@ -17,6 +17,7 @@ from nexus_workbench import __version__, mcp_errors, mcp_server, prompts, update
 from nexus_workbench import client as c
 from nexus_workbench import scopes as sc
 from tests.fake_api import API_BASE, FakeAPI, sample_data
+from tests.test_mcp_server import error_of
 
 ROOT = Path(__file__).resolve().parents[1]
 ALL_SCOPES = list(sc.ALL)
@@ -143,7 +144,7 @@ def test_early_access_error_is_structured(api: FakeAPI) -> None:
     result = call(server, "list_projects")
     assert result.is_error is True
     assert "Agent access is not on" in result.content[0].text
-    error = result.structured_content
+    error = error_of(result)
     assert error["code"] == "early_access_required"
     assert error["howToFix"] == [mcp_errors.REQUEST_ACCESS]
     assert error["localAlternative"] == list(mcp_errors.LOCAL_TOOLS)
@@ -153,7 +154,7 @@ def test_early_access_error_is_structured(api: FakeAPI) -> None:
 def test_expired_token_error_says_login(api: FakeAPI) -> None:
     server = mcp_server.build_server(factory_for(api, api.add_token(expired=True)), scopes=None)
     result = call(server, "whoami")
-    error = result.structured_content
+    error = error_of(result)
     assert error["code"] == "token_expired"
     assert error["howToFix"] == ["nexus-workbench login"]
     assert "inspect_edf" in error["localAlternative"]
@@ -164,7 +165,7 @@ def test_write_access_error_has_no_local_alternative(api: FakeAPI) -> None:
     token = api.add_token(scopes=["read", "marks:write"])
     server = mcp_server.build_server(factory_for(api, token), scopes=["read", "marks:write"])
     result = call(server, "withdraw_marks", {"id": "e_1"})
-    error = result.structured_content
+    error = error_of(result)
     assert error["code"] == "write_access_required"
     assert error["localAlternative"] == []
     assert error["howToFix"] and "Insai" in error["howToFix"][0]
@@ -174,7 +175,7 @@ def test_rate_limit_error_carries_retry_after(api: FakeAPI) -> None:
     server = mcp_server.build_server(factory_for(api, api.add_token()), scopes=None)
     api.rate_limit_next = ["30", "30"]  # more than the client waits by itself
     result = call(server, "list_projects")
-    error = result.structured_content
+    error = error_of(result)
     assert error["code"] == "rate_limited"
     assert error["retryAfter"] == 30
     assert error["howToFix"] == ["Wait 30 seconds, then try again."]
@@ -189,7 +190,7 @@ def test_request_id_from_a_header_reaches_the_tool_error(api: FakeAPI) -> None:
     api.agent_access = False
     factory = factory_for(api, api.add_token(), transport=httpx.MockTransport(handler))
     result = call(mcp_server.build_server(factory, scopes=None), "whoami")
-    assert result.structured_content["requestId"] == "abc123def"
+    assert error_of(result)["requestId"] == "abc123def"
 
 
 def test_every_error_has_the_same_keys(api: FakeAPI, tmp_path: Path) -> None:
@@ -203,9 +204,9 @@ def test_every_error_has_the_same_keys(api: FakeAPI, tmp_path: Path) -> None:
     ):
         result = call(server, name, args)
         assert result.is_error is True, name
-        assert set(result.structured_content) == keys, name
-        assert result.structured_content["ok"] is False
-        assert result.structured_content["code"] in CONTRACT_CODES, name
+        assert set(error_of(result)) == keys, name
+        assert error_of(result)["ok"] is False
+        assert error_of(result)["code"] in CONTRACT_CODES, name
 
 
 def _contract_codes() -> set[str]:
@@ -450,7 +451,7 @@ def test_notice_is_added_to_one_tool_result(check_on: Path, api: FakeAPI) -> Non
     ]
     assert "uv tool upgrade nexus-workbench" in notices[0]
     # The structured copy is untouched.
-    assert results[1].structured_content["code"] == "not_signed_in"
+    assert error_of(results[1])["code"] == "not_signed_in"
 
 
 def test_doctor_prints_the_notice(

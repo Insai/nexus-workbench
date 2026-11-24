@@ -52,7 +52,7 @@ Rules shared by all six:
   range gives a short plain error that names the argument, says what it must be and shows
   what was sent, for example `limit must be an integer from 1 to 100 (got 500).` or
   `id is required.`
-- Every MCP tool error also carries structured content with a stable `code`
+- Every MCP tool error also carries a JSON block (its second text block) with a stable `code`
   (`invalid_argument`, `local_file`, `local_unexpected`, or a workspace code), `howToFix`,
   `localAlternative`, `requestId` and `retryAfter`. See docs/contract.md section 3.3.
 - From the command line (`nexus-workbench qc`), errors carry a code in brackets:

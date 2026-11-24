@@ -47,11 +47,20 @@ def run(coro_fn: Any) -> Any:
     return anyio.run(coro_fn)
 
 
+def error_of(result: Any) -> dict[str, Any]:
+    """An error result's structured copy: its second text block, as JSON. It is never sent as
+    structured content (that would not match the tool's output schema)."""
+    assert result.is_error is True
+    assert result.structured_content is None
+    texts = [block.text for block in result.content if getattr(block, "text", None)]
+    return json.loads(texts[1])
+
+
 def text_of(result: Any) -> str:
     """The text for a person. An error's second block is its structured copy as JSON."""
     texts = [block.text for block in result.content if getattr(block, "text", None)]
     if result.is_error:
-        assert json.loads(texts[1]) == result.structured_content
+        assert isinstance(json.loads(texts[1]), dict)
         return texts[0]
     return "\n".join(texts)
 
@@ -336,7 +345,7 @@ def test_signed_out_message(api: FakeAPI) -> None:
             + mcp_errors.RUN_IT_YOURSELF
         )
         assert "paste" not in text_of(result)
-        assert result.structured_content == {
+        assert error_of(result) == {
             "ok": False,
             "code": "not_signed_in",
             "reason": "Not signed in.",

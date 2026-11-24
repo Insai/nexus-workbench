@@ -110,12 +110,11 @@ def payload(
 
 def result(message: str, data: dict[str, Any]) -> CallToolResult:
     """A tool error result: the message for a person first, then the structured copy as
-    compact JSON (for clients that show only text), and the same object as structured
-    content."""
+    compact JSON. It is not sent as structured content: that must match the tool's output
+    schema, and a client that checks it strictly would reject the whole result."""
     text = json.dumps(data, separators=(",", ":"), ensure_ascii=False)
     return CallToolResult(
         content=[TextContent(type="text", text=message), TextContent(type="text", text=text)],
-        structured_content=data,
         is_error=True,
     )
 

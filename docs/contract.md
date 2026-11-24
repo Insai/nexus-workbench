@@ -226,8 +226,8 @@ Every command-line error message carries its code in brackets, right after
 the first sentence and before the advice, like
 `Not signed in (not_signed_in). Run ...`. With `--json` it prints the error to stderr
 as `{"error": {"code": "<code>", "message": "<text>"}}` and exits non-zero.
-The MCP tools return a message for a person and, beside it, the same error as
-structured content: `{"ok": false, "code", "reason", "howToFix", "localAlternative",
+The MCP tools return a message for a person and, as a second text block, the same error
+as compact JSON: `{"ok": false, "code", "reason", "howToFix", "localAlternative",
 "requestId", "retryAfter"}`. `code` is the code; `howToFix` the steps, a command exactly
 as the person types it in their own terminal; `localAlternative` the local tools that
 still work (empty when none apply); `requestId` the id the server gave the request when a
