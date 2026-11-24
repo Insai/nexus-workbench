@@ -124,11 +124,10 @@ def test_insai_package_is_consistent() -> None:
     import re
     from pathlib import Path
 
-    import tomllib
-
     root = Path(__file__).resolve().parents[1] / "packages" / "insai"
-    project = tomllib.loads((root / "pyproject.toml").read_text())["project"]
+    pyproject = (root / "pyproject.toml").read_text()
     init = (root / "src" / "insai" / "__init__.py").read_text()
-    assert re.search(r'__version__ = "([^"]+)"', init).group(1) == project["version"]
-    assert any(d.startswith("nexus-workbench") for d in project["dependencies"])
-    assert project["scripts"]["insai"] == "nexus_workbench.cli:main"
+    version = re.search(r'^version = "([^"]+)"', pyproject, re.M).group(1)
+    assert re.search(r'__version__ = "([^"]+)"', init).group(1) == version
+    assert re.search(r'^dependencies = \["nexus-workbench[^"]*"\]', pyproject, re.M)
+    assert 'insai = "nexus_workbench.cli:main"' in pyproject
