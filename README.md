@@ -148,6 +148,7 @@ nexus-workbench login --scope detail --scope marks:write
 | `marks:write` | Propose marks as a review layer, and withdraw them. | `propose_marks`, `withdraw_marks` |
 | `tasks:write` | Give review tasks to members. | `create_review_task` |
 | `analysis:run` | Ask for an analysis of a recording you uploaded (not available yet, see below). | `request_analysis` |
+| `channels:write` | Set the electrode sites of a recording's channels (staging only). | none: the `channels set` and `channels clear` commands |
 
 The approval page shows the scopes before you approve, and the person approving may give
 fewer. Write scopes can be approved only in a workspace where Insai has switched agent
@@ -184,6 +185,9 @@ scopes are not known without a call, so the server lists the read tools only.
 | `nexus-workbench task give IDS` | Give a member review tasks (`--member`, `--mode` `blind` or `assisted`, `--confirm-machine-seen`). Says whether the member was emailed. Needs `tasks:write`. |
 | `nexus-workbench analyse ID` | Ask for an analysis of a recording you uploaded. Needs `analysis:run`. Not available yet: Workbench checks the request and answers `not_available`; use Analyse on the recording page. |
 | `nexus-workbench preprocess PATH` | Band-pass, notch, resample or pick channels of a local EDF into a new file (`--low`, `--high`, `--notch`, `--resample`, `--channels`, `--out`). No account needed. |
+| `nexus-workbench channels show REC` | `REC` is the recording's label as members see it (exact, case-sensitive) or its id (24 hex characters; `--id` forces an id). The electrode site each channel records, its label in the app, whether the sites are checked, whether the device fixes them, and the version (`--json`). |
+| `nexus-workbench channels set REC` | Set a headband's four port sites: `--port Ec1=M1` (repeat) or `--preset frontal_on_et`, then `--checked` or `--unchecked`; `--expected-version N`. Needs a token with `channels:write`. Prints the old and new sites and the command that undoes it. |
+| `nexus-workbench channels clear REC` | Remove the sites set on a recording. |
 | `nexus-workbench sample` | Write a synthetic sample night to try the local tools on (`--out`, `--hours`, `--seed`, `--force`). |
 | `nexus-workbench qc PATH` | Describe a local EDF file and check its signal quality in 30 s epochs (`--json` for the raw results). The recording must be 30 s or longer. |
 | `nexus-workbench doctor` | Check the install, the sign-in and the agent registrations. Being signed out is not a failure. |
@@ -211,7 +215,9 @@ arrive.
 
 Exit codes: 0 ok, 1 failure, 2 usage error. `task give` exits 1 only when no task was
 given. A result that is withheld by blinding is not an error: the command says so and
-exits 0.
+exits 0. The `channels` commands add 3 (Workbench refused the change:
+the code and the reason are printed, with what to do) and 4 (sign-in, token scope or
+workspace access).
 
 Error messages carry a stable code in brackets, right after the first sentence, for
 example:
@@ -220,7 +226,10 @@ example:
 Not signed in (not_signed_in). Run `nexus-workbench login` in a terminal, then try again.
 ```
 
-With `--json`, an error is printed to stderr as one JSON object, and stdout stays empty:
+With `--json`, an error is printed to stderr as one JSON object, and stdout stays empty: The `channels`
+commands add `fix` to the error object, the request id when the server sent one, and the
+refusal's details at the top level (`current` on `changed`, `candidates` on
+`ambiguous_label`).
 
 ```json
 {"error": {"code": "not_signed_in", "message": "Not signed in. Run `nexus-workbench login` in a terminal, then try again."}}

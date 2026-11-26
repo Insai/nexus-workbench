@@ -467,6 +467,7 @@ keys" is a literal allowlist on the server, as in version 1.
 | `marks:write` | `propose_marks`, `withdraw_marks`. | `agentAccess` and `agentWrite` |
 | `tasks:write` | `create_review_task`. | `agentAccess` and `agentWrite` |
 | `analysis:run` | `request_analysis`. | `agentAccess` and `agentWrite` |
+| `channels:write` | `set_channels` (section 7.12). | `agentAccess` and `agentWrite` |
 
 - Scopes are chosen when the token is made: `create` on the page (section
   7.8) and `start` of the terminal sign-in (section 7.9) take a `scopes`
@@ -477,7 +478,7 @@ keys" is a literal allowlist on the server, as in version 1.
 - Tokens made before version 1.1 carry `["read"]` and keep it.
 - `whoami` returns the token's own scopes, `token` rows carry them, and
   `exchange` returns them. Order in the list is `read`, `detail`,
-  `marks:write`, `tasks:write`, `analysis:run`.
+  `marks:write`, `tasks:write`, `analysis:run`, `channels:write`.
 - Every action below names the scope it needs. A call without it is 403
   `scope_required`, and the body names the scope:
 
@@ -1214,7 +1215,54 @@ When a call is refused with `early_access_required`, the client says:
 "Agent access is not on for this workspace yet. Request it in Workbench:
 account menu, Connect an agent, Request agent access."
 
-### 7.12 Still later
+### 7.12 Channel sites (staging)
+
+Which electrode site each channel of a recording records. Canonical in
+nexus-cloud; this section is the
+client's summary. Only while the server's `WORKBENCH_MONTAGE` switch is on;
+otherwise both actions answer 501 `not_available`.
+
+| Action | Scope | Input | Output keys |
+|---|---|---|---|
+| `get_channels` | `read` | `id` or `label` | `effective`, `ports`, `checked`, `version`, `permissions`, `presets`, `contractRevision` |
+| `set_channels` | `channels:write` (a write scope: needs `agentWrite`) | `id` or `label`, `expectedVersion`, `ports` (`{}` clears), `checked` | `version`, `ports`, `checked`, `effective`, `prev`, `unchanged` |
+
+- Ports are `Ec1`, `Et1`, `Ec2`, `Et2` (firmware order), case-blind on
+  input. A value is a 10-10 site (`Fp1`, `AF7`, ...), a mastoid (`M1`,
+  `M2`) or an in-ear site; the server spells it. A missing port is not placed.
+- `expectedVersion` is the `version` from `get_channels` (0 when none was
+  ever set). The token's owner is the actor, under the desk's own policy.
+- `label` names the recording as members see it (trimmed, case-sensitive, 1 to 200
+  characters) in the token's workspace; never with `id` (400). No match is 404
+  `not_found`; several are 409 `ambiguous_label` with top-level `candidates`
+  (ids, sorted, at most 20). The client sends 24 hex characters as `id`, anything
+  else as `label`, and exits 2 on `ambiguous_label`, printing the candidates.
+- A label that is not a standard electrode or sensor name reads `chN`.
+
+Refusals (`{"error": {"code", "message"}}`):
+
+| HTTP | `code` |
+|---|---|
+| 403 | `held`, `insai_checked`, `checked_needs_insai` |
+| 400 | `bad_port`, `bad_site`, `duplicate_site`, `invalid_argument` |
+| 409 | `changed` (with top-level `current: {version, ports, checked}`), `fixed_device`, `combined`, `device_crossed`, `no_source_key`, `header_unparsed`, `incomplete` |
+| 404 | `not_found` |
+| 409 | `ambiguous_label` (with top-level `candidates`) |
+| 503 | `unavailable` (the file header could not be read) |
+| 501 | `not_available` |
+
+The client keeps each code unchanged. `scope_required`, `write_access_required`
+and `not_available` are the typed errors of section 7.10 (`scope_required`
+names the `login` command with `--scope channels:write`); the other codes
+above, `unavailable` and `ambiguous_label` are one refusal error that keeps the
+server's `code`, its message and the body's other top-level keys (`current`,
+`candidates`). `set_channels` is not a section 7 action for the "too old"
+rule: a server without channel sites says `not_available` itself. `nexus-workbench channels show | set | clear`
+wraps the two actions: `set` reads the version first unless
+`--expected-version` is given, keeps the ports it is not given, and exits 3
+on a refusal and 4 on sign-in, scope or access.
+
+### 7.13 Still later
 
 Signal download; a `personKey` on recording rows; reading another person's
 scoring; editing or re-labelling an existing mark; re-analysis; a staff

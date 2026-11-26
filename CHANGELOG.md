@@ -4,6 +4,19 @@ All notable changes to this package are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- `nexus-workbench channels show | set | clear`: read and set the electrode sites of a
+  recording's channels through the agent API (`get_channels`, `set_channels`, contract
+  section 7.12; staging only for now). A recording is named by its label as members see it
+  or by its id. `set` and `clear` print the old and new sites and the command that undoes
+  the change. Exit 3 when Workbench refuses the change (the code, the reason and what to do
+  are printed), 4 on sign-in, token scope or workspace access.
+- The `channels:write` scope (a write scope: `nexus-workbench login --scope channels:write`).
+  A token without it gets `scope_required` with the exact `login` command.
+
 ## [0.2.1] - 2026-11-24
 
 Small changes that help an agent on its first try.

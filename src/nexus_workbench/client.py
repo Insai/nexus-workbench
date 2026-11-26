@@ -292,6 +292,52 @@ class NotOnServer(InvalidArgument):
         )
 
 
+class ServerRefusal(WorkbenchError):
+    """A refusal whose code the server chose and the client passes through unchanged
+    (contract 7.12): ``code`` is the server's, ``message`` its sentence, and ``extra`` the
+    body's other top-level keys (``current`` on ``changed``, ``candidates`` on
+    ``ambiguous_label``). The codes are in :data:`REFUSAL_CODES`."""
+
+    default_message = "Workbench refused the request."
+
+    def __init__(
+        self,
+        code: str,
+        message: str | None = None,
+        *,
+        hint: str | None = None,
+        status: int | None = None,
+        extra: dict[str, Any] | None = None,
+    ) -> None:
+        self.code = code
+        self.extra = dict(extra or {})
+        super().__init__(message, hint=hint, status=status)
+
+
+#: Server codes passed through as :class:`ServerRefusal` (contract 7.12): the channel-site
+#: refusals, ``unavailable`` and ``ambiguous_label``. ``scope_required``,
+#: ``write_access_required`` and ``not_available`` have their own classes above.
+REFUSAL_CODES = frozenset(
+    {
+        "unavailable",
+        "held",
+        "insai_checked",
+        "checked_needs_insai",
+        "bad_port",
+        "bad_site",
+        "duplicate_site",
+        "changed",
+        "fixed_device",
+        "combined",
+        "device_crossed",
+        "no_source_key",
+        "header_unparsed",
+        "incomplete",
+        "ambiguous_label",
+    }
+)
+
+
 ERRORS_BY_CODE: dict[str, type[WorkbenchError]] = {
     cls.code: cls
     for cls in (
@@ -320,6 +366,14 @@ NOT_AVAILABLE_BY_ACTION: dict[str, tuple[str, str]] = {
     "request_analysis": (
         "Starting an analysis from an agent is not available yet.",
         "Use Analyse on the recording page.",
+    ),
+    "get_channels": (
+        "Channel sites are not switched on for this Workbench server yet.",
+        "Read them on the Workbench page instead.",
+    ),
+    "set_channels": (
+        "Channel sites are not switched on for this Workbench server yet.",
+        "Set them on the Workbench page instead.",
     ),
 }
 
@@ -509,6 +563,11 @@ def _error_from_response(
             hint=f"Check {ENV_API_URL} if you set it.",
             status=status,
         )
+
+    if isinstance(code, str) and code in REFUSAL_CODES:
+        extra = {k: v for k, v in body.items() if k != "error"} if isinstance(body, dict) else {}
+        message = _one_line(error.get("message")) if isinstance(error, dict) else None
+        return ServerRefusal(code, message, status=status, extra=extra)
 
     retry_after = _parse_retry_after(response.headers.get("Retry-After"))
     cls = ERRORS_BY_CODE.get(code) if isinstance(code, str) else None

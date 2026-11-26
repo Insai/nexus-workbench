@@ -1,7 +1,8 @@
 """Command line: ``nexus-workbench`` (also installed as ``nexus``).
 
 Exit codes: 0 ok, 1 failure, 2 usage. The version 1.1 commands are in
-:mod:`nexus_workbench.commands`.
+:mod:`nexus_workbench.commands`. The ``channels`` commands add 3 (refused by Workbench)
+and 4 (sign-in, token scope or workspace access).
 
 Error messages name a stable code in brackets, for example ``(not_signed_in)`` (contract
 section 3.3). With ``--json`` an error is printed to stderr as
@@ -24,9 +25,11 @@ from collections.abc import Sequence
 from typing import Any
 
 from . import __version__, auth, update_check
+from . import channels as chan
 from . import scopes as sc
 from .client import (
     REQUEST_ACCESS_HINT,
+    ServerRefusal,
     WorkbenchClient,
     WorkbenchError,
     display_name,
@@ -279,6 +282,98 @@ def cmd_recordings(args: argparse.Namespace) -> int:
         _err("The list is incomplete: the workspace holds more recordings than one pass reads.")
     if data.get("nextCursor"):
         print(f"More recordings: run again with --cursor {_safe(data['nextCursor'], limit=None)}")
+    return OK
+
+
+# ---------------------------------------------------------------------------
+# channels
+# ---------------------------------------------------------------------------
+
+
+def _channels_fail(exc: WorkbenchError, *, as_json: bool) -> int:
+    """Print a refusal with the server's reason and the fix; return the command's exit code.
+
+    The shape is :func:`_fail_workbench`'s (``message`` is the whole text, ``requestId`` when
+    the server sent one), plus ``fix`` on its own and the refusal's ``extra`` at the top level
+    (``current`` on ``changed``, ``candidates`` on ``ambiguous_label``).
+    """
+    code = exc.code
+    fix = chan.fix_for(code) or exc.hint
+    extra = exc.extra if isinstance(exc, ServerRefusal) else {}
+    if as_json:
+        error: dict[str, Any] = {"code": code, "message": f"{exc.message.strip()} {fix}".strip()}
+        if fix:
+            error["fix"] = fix
+        if exc.request_id is not None:
+            error["requestId"] = exc.request_id
+        _err(json.dumps({"error": error, **extra}, ensure_ascii=False))
+    else:
+        line = with_code(code, exc.message, fix)
+        if exc.request_id is not None:
+            line += f" Request id: {exc.request_id}."
+        _err(line)
+        if code == "changed" and chan.changed_detail(extra):
+            _err(chan.changed_detail(extra))
+        if code == "ambiguous_label" and chan.candidates_detail(extra):
+            _err(chan.candidates_detail(extra))
+    return chan.exit_code(code)
+
+
+def _channels_usage(message: str, *, as_json: bool) -> int:
+    _fail(USAGE_CODE, message, as_json=as_json)
+    return USAGE
+
+
+def cmd_channels(args: argparse.Namespace) -> int:
+    rec = args.recording
+    try:
+        overrides = chan.parse_ports(getattr(args, "port", None))
+    except chan.UsageError as exc:
+        return _channels_usage(str(exc), as_json=args.json)
+    try:
+        ref = chan.recording_ref(rec, by_id=bool(getattr(args, "by_id", False)))
+    except chan.UsageError as exc:
+        return _channels_usage(str(exc), as_json=args.json)
+    expected = getattr(args, "expected_version", None)
+    if expected is not None and expected < 0:
+        return _channels_usage("--expected-version must be 0 or more.", as_json=args.json)
+    with _client() as client:
+        try:
+            current = client.call("get_channels", **ref)
+            if args.channels_cmd == "show":
+                result = current
+            else:
+                if args.channels_cmd == "clear":
+                    ports: dict[str, str] = {}
+                    checked = False
+                else:
+                    ports = chan.plan_ports(
+                        current.get("ports") or {},
+                        current.get("presets") or [],
+                        args.preset,
+                        overrides,
+                    )
+                    checked = bool(args.checked)
+                result = client.call(
+                    "set_channels",
+                    **ref,
+                    expectedVersion=current.get("version", 0) if expected is None else expected,
+                    ports=ports,
+                    checked=checked,
+                )
+        except chan.UsageError as exc:
+            return _channels_usage(str(exc), as_json=args.json)
+        except WorkbenchError as exc:
+            return _channels_fail(exc, as_json=args.json)
+    if args.json:
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+    elif args.channels_cmd == "show":
+        print(chan.format_show(rec, result))
+    else:
+        text = chan.format_set(rec, result, command="nexus-workbench")
+        if "id" in ref and not chan.ID_RE.fullmatch(ref["id"]):
+            text = text.replace("--expected-version", "--id --expected-version")
+        print(text)
     return OK
 
 
@@ -579,7 +674,7 @@ def build_parser() -> argparse.ArgumentParser:
         "for more than reading; the approver may give fewer.",
         epilog=(
             "scopes (read is always included):\n"
-            + "".join(f"  {name:<13} {sc.MEANING[name]}\n" for name in sc.ALL)
+            + "".join(f"  {name:<15} {sc.MEANING[name]}\n" for name in sc.ALL)
             + "\nexamples:\n"
             "  nexus-workbench login\n"
             "  nexus-workbench login --scope detail --scope marks:write"
@@ -628,6 +723,84 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--cursor", help="cursor printed by the previous page")
     p.add_argument("--json", action="store_true", help="print the raw JSON")
     p.set_defaults(func=cmd_recordings)
+
+    p = add(
+        "channels",
+        "show or set the electrode sites of a recording's channels",
+        "Show which electrode site each channel of a recording records (show), or set the sites "
+        "of a headband's four ports (set, clear). Every change goes through Workbench's own "
+        "checks: a fixed device, a held reader, an Insai-checked montage or a version someone "
+        "else saved first is refused with the reason. Needs sign-in; set and clear need a token "
+        "with the channels:write scope.",
+        epilog=(
+            "examples:\n"
+            "  nexus-workbench channels show e_1\n"
+            "  nexus-workbench channels set e_1 --preset frontal_on_et --unchecked\n"
+            "  nexus-workbench channels set e_1 --port Ec1=M1 --port Ec2=M2 \\\n"
+            "      --port Et1=AF7 --port Et2=AF8 --checked\n"
+            "  nexus-workbench channels clear e_1\n"
+            "\n"
+            "exit codes: 0 ok, 1 failure, 2 usage, 3 refused by Workbench, "
+            "4 sign-in or token scope"
+        ),
+    )
+    csub = p.add_subparsers(
+        dest="channels_cmd", metavar="ACTION", required=True, help="show, set or clear"
+    )
+    rec_help = (
+        "the recording's label as members see it (e.g. a night label), or its id "
+        "(24 hex characters)"
+    )
+    cs = csub.add_parser("show", help="the sites, app labels, check, device and version")
+    cs.add_argument("recording", help=rec_help)
+    cs.add_argument("--id", dest="by_id", action="store_true", help="read the recording as an id")
+    cs.add_argument("--json", action="store_true", help="print the raw JSON")
+    cs.set_defaults(func=cmd_channels)
+    cset = csub.add_parser(
+        "set",
+        help="set the four ports' sites",
+        description=(
+            "Set the ports' sites. Ports you do not name keep their current site; --preset "
+            "starts from a preset instead. `--port Ec1=` takes a port off. The version is read "
+            "first unless --expected-version is given."
+        ),
+    )
+    cset.add_argument("recording", help=rec_help)
+    cset.add_argument("--id", dest="by_id", action="store_true", help="read the recording as an id")
+    cset.add_argument(
+        "--port",
+        action="append",
+        metavar="PORT=SITE",
+        help="a port and its site, e.g. Ec1=M1 (repeat for each port)",
+    )
+    cset.add_argument(
+        "--preset",
+        help="start from a preset: forehead, forehead_swapped, frontal_on_ec or frontal_on_et",
+    )
+    tick = cset.add_mutually_exclusive_group(required=True)
+    tick.add_argument("--checked", dest="checked", action="store_true", help="tick: checked")
+    tick.add_argument("--unchecked", dest="checked", action="store_false", help="not checked")
+    cset.add_argument(
+        "--expected-version",
+        "--expect-version",
+        dest="expected_version",
+        type=int,
+        help="refuse unless the sites are still at this version (default: read it first)",
+    )
+    cset.add_argument("--json", action="store_true", help="print the raw JSON")
+    cset.set_defaults(func=cmd_channels)
+    cc = csub.add_parser("clear", help="remove the sites set on a recording")
+    cc.add_argument("recording", help=rec_help)
+    cc.add_argument("--id", dest="by_id", action="store_true", help="read the recording as an id")
+    cc.add_argument(
+        "--expected-version",
+        "--expect-version",
+        dest="expected_version",
+        type=int,
+        help="refuse unless the sites are still at this version (default: read it first)",
+    )
+    cc.add_argument("--json", action="store_true", help="print the raw JSON")
+    cc.set_defaults(func=cmd_channels)
 
     p = add(
         "sample",

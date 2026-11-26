@@ -9,11 +9,12 @@ DETAIL = "detail"
 MARKS_WRITE = "marks:write"
 TASKS_WRITE = "tasks:write"
 ANALYSIS_RUN = "analysis:run"
+CHANNELS_WRITE = "channels:write"
 
 #: Every scope, in the contract's order.
-ALL: tuple[str, ...] = (READ, DETAIL, MARKS_WRITE, TASKS_WRITE, ANALYSIS_RUN)
+ALL: tuple[str, ...] = (READ, DETAIL, MARKS_WRITE, TASKS_WRITE, ANALYSIS_RUN, CHANNELS_WRITE)
 #: Scopes that let a token change something in Workbench. Each needs ``agentWrite``.
-WRITE: frozenset[str] = frozenset({MARKS_WRITE, TASKS_WRITE, ANALYSIS_RUN})
+WRITE: frozenset[str] = frozenset({MARKS_WRITE, TASKS_WRITE, ANALYSIS_RUN, CHANNELS_WRITE})
 
 #: The scope each action needs. Actions not listed need ``read``.
 ACTION_SCOPE: dict[str, str] = {
@@ -25,11 +26,13 @@ ACTION_SCOPE: dict[str, str] = {
     "withdraw_marks": MARKS_WRITE,
     "create_review_task": TASKS_WRITE,
     "request_analysis": ANALYSIS_RUN,
+    "set_channels": CHANNELS_WRITE,
 }
 
 #: Actions added in version 1.1. A version 1 server answers them with "Unknown action".
+#: ``set_channels`` (contract 7.12) is not one: a server without channel sites says so itself.
 V11_ACTIONS: frozenset[str] = frozenset(
-    {"list_members", "list_tasks", "list_nights", "list_layers", *ACTION_SCOPE}
+    {"list_members", "list_tasks", "list_nights", "list_layers", *ACTION_SCOPE} - {"set_channels"}
 )
 
 #: What a token without the scope cannot do, as the start of a sentence.
@@ -39,6 +42,7 @@ CANNOT: dict[str, str] = {
     MARKS_WRITE: "This token cannot propose or withdraw marks.",
     TASKS_WRITE: "This token cannot give review tasks.",
     ANALYSIS_RUN: "This token cannot start an analysis.",
+    CHANNELS_WRITE: "This token cannot set channel sites.",
 }
 
 #: The same sentence for one action, where the action says more than its scope.
@@ -64,6 +68,7 @@ MEANING: dict[str, str] = {
     MARKS_WRITE: "propose marks as a review layer, and withdraw them",
     TASKS_WRITE: "give review tasks to members",
     ANALYSIS_RUN: "ask for an analysis of a recording you uploaded",
+    CHANNELS_WRITE: "set the electrode sites of a recording's channels",
 }
 
 
