@@ -1,4 +1,4 @@
-"""HTTPS client for the Workbench agent API (contract sections 1, 3 and 5).
+"""HTTPS client for the Workbench agent API (contract sections 1, 3, 5 and 7).
 
 The token is sent only in the Authorization header and is never logged or put
 into an exception message.
@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 from collections.abc import Callable
 from typing import Any
@@ -17,11 +18,14 @@ from urllib.parse import urlsplit
 import httpx
 
 from . import __version__, auth
+from . import scopes as sc
 
 logger = logging.getLogger(__name__)
 
 PRODUCTION_API_BASE = "https://europe-west4-insai-nexus.cloudfunctions.net"
-EARLY_ACCESS_URL = "https://insai.tech/workbench"
+REQUEST_ACCESS_HINT = (
+    "Request it in Workbench: account menu, Connect an agent, Request agent access."
+)
 AGENT_API_PATH = "/workbench_agent_api"
 CLI_LOGIN_PATH = "/workbench_cli_login"
 
@@ -29,6 +33,8 @@ ENV_API_URL = "NEXUS_API_URL"
 ENV_ALLOW_INSECURE_LOCAL = "NEXUS_ALLOW_INSECURE_LOCAL"
 
 MAX_BODY_BYTES = 2048
+#: ``propose_marks`` alone may send a larger body (contract 7.7).
+MAX_PROPOSE_BODY_BYTES = 262_144
 MAX_RETRY_AFTER_SECONDS = 10.0
 TIMEOUT = httpx.Timeout(connect=5.0, read=30.0, write=30.0, pool=5.0)
 USER_AGENT = f"nexus-workbench/{__version__}"
@@ -53,6 +59,10 @@ class WorkbenchError(Exception):
     code: str = "error"
     default_message: str = "Something went wrong talking to Workbench."
     default_hint: str = ""
+    #: The id the server gave this request, when it sent one (see :func:`request_id_of`).
+    request_id: str | None = None
+    #: Seconds the server asked the client to wait (``Retry-After``), when it said.
+    retry_after: float | None = None
 
     def __init__(
         self,
@@ -114,10 +124,8 @@ class Forbidden(WorkbenchError):
 
 class EarlyAccessRequired(WorkbenchError):
     code = "early_access_required"
-    default_message = (
-        "Agent access is in early access and is not switched on for this workspace yet."
-    )
-    default_hint = f"Ask for access: {EARLY_ACCESS_URL}"
+    default_message = "Agent access is not on for this workspace yet."
+    default_hint = REQUEST_ACCESS_HINT
 
 
 class NotFound(WorkbenchError):
@@ -196,10 +204,99 @@ class UnexpectedResponse(WorkbenchError):
     default_hint = "Update with `uv tool upgrade nexus-workbench`, then try again."
 
 
+class ScopeRequired(WorkbenchError):
+    """The token lacks the scope an action needs (contract 7.1). ``scope`` names it."""
+
+    code = "scope_required"
+
+    def __init__(
+        self,
+        scope: str | None = None,
+        *args: Any,
+        have: tuple[str, ...] | None = None,
+        action: str | None = None,
+        **kwargs: Any,
+    ) -> None:
+        self.scope = scope if scope in sc.ALL else None
+        keep = [s for s in sc.normalise(have) if s not in (sc.READ, self.scope)]
+        #: The exact ``login`` command that makes a token with the missing scope, keeping the
+        #: scopes this token has (``None`` when the scope is not known).
+        self.login = sc.login_command([self.scope, *keep]) if self.scope else None
+        if "message" not in kwargs and not args:
+            kwargs["message"] = (
+                sc.cannot(self.scope, action)
+                if self.scope
+                else "This token lacks the scope this needs."
+            )
+        if "hint" not in kwargs:
+            if self.scope:
+                extra = " ".join(f"`--scope {s}`" for s in keep)
+                kwargs["hint"] = f"Sign in again with `{sc.login_command([self.scope])}`" + (
+                    f" (add {extra} to keep what this token has)." if keep else "."
+                )
+            else:
+                kwargs["hint"] = "Sign in again with `nexus-workbench login --scope <scope>`."
+        super().__init__(*args, **kwargs)
+
+    @property
+    def agent_text(self) -> str:
+        """The text for an agent: the same, plus the restart the new scopes need."""
+        hint = self.hint.rstrip(".")
+        return f"{self.message} {hint}, then restart the agent session.".strip()
+
+
+class WriteAccessRequired(WorkbenchError):
+    code = "write_access_required"
+    default_message = "This workspace does not take agent writes yet."
+    default_hint = "Insai staff switch agent writes on per workspace. Reads still work."
+
+
+class AlreadyAnalysed(WorkbenchError):
+    code = "already_analysed"
+    default_message = "This recording already has machine output, so no analysis was started."
+    default_hint = "An agent cannot ask for a re-analysis."
+
+
+class MarkLimit(WorkbenchError):
+    code = "mark_limit"
+    default_message = (
+        "These marks would take this token past 5,000 marks on this recording, "
+        "withdrawn ones included."
+    )
+    default_hint = "Nothing was written. Propose fewer marks."
+
+
+class NotAvailable(WorkbenchError):
+    """HTTP 501: the server checked the call but cannot do it yet (contract 7.7)."""
+
+    code = "not_available"
+    default_message = "Workbench cannot do this through the agent API yet."
+    default_hint = "Do it on the Workbench page instead."
+
+
+class TooLarge(WorkbenchError):
+    code = "too_large"
+    default_message = "This recording's events are too large to read through the agent API."
+    default_hint = "Open the recording in Workbench instead."
+
+
+class NotOnServer(InvalidArgument):
+    """A version 1.1 action sent to a version 1 server (contract section 7)."""
+
+    def __init__(self, action: str, **kwargs: Any) -> None:
+        self.action = action
+        super().__init__(
+            f"This Workbench server does not offer {safe_text(action, 40)} yet.",
+            hint="It is part of agent API version 1.1, which this server does not run yet.",
+            **kwargs,
+        )
+
+
 class ServerRefusal(WorkbenchError):
     """A refusal whose code the server chose and the client passes through unchanged
-    (contract 7.10 and 7.12): ``code`` is the server's, and ``extra`` holds the body's other
-    top-level keys (``scope``, ``current``)."""
+    (contract 7.12): ``code`` is the server's, ``message`` its sentence, and ``extra`` the
+    body's other top-level keys (``current`` on ``changed``, ``candidates`` on
+    ``ambiguous_label``). The codes are in :data:`REFUSAL_CODES`."""
 
     default_message = "Workbench refused the request."
 
@@ -217,12 +314,11 @@ class ServerRefusal(WorkbenchError):
         super().__init__(message, hint=hint, status=status)
 
 
-#: Server codes passed through as :class:`ServerRefusal` (contract 7.10 and 7.12).
-PASSTHROUGH_CODES = frozenset(
+#: Server codes passed through as :class:`ServerRefusal` (contract 7.12): the channel-site
+#: refusals, ``unavailable`` and ``ambiguous_label``. ``scope_required``,
+#: ``write_access_required`` and ``not_available`` have their own classes above.
+REFUSAL_CODES = frozenset(
     {
-        "scope_required",
-        "write_access_required",
-        "not_available",
         "unavailable",
         "held",
         "insai_checked",
@@ -256,7 +352,45 @@ ERRORS_BY_CODE: dict[str, type[WorkbenchError]] = {
         InternalError,
         LoginExpired,
         CodeWrong,
+        ScopeRequired,
+        WriteAccessRequired,
+        AlreadyAnalysed,
+        MarkLimit,
+        NotAvailable,
+        TooLarge,
     )
+}
+
+#: The sentence and advice for ``not_available`` on the actions that send it.
+NOT_AVAILABLE_BY_ACTION: dict[str, tuple[str, str]] = {
+    "request_analysis": (
+        "Starting an analysis from an agent is not available yet.",
+        "Use Analyse on the recording page.",
+    ),
+    "get_channels": (
+        "Channel sites are not switched on for this Workbench server yet.",
+        "Read them on the Workbench page instead.",
+    ),
+    "set_channels": (
+        "Channel sites are not switched on for this Workbench server yet.",
+        "Set them on the Workbench page instead.",
+    ),
+}
+
+#: A clearer sentence for ``forbidden`` on the actions where it has a second meaning.
+FORBIDDEN_BY_ACTION: dict[str, str] = {
+    "propose_marks": (
+        "Workbench refused to write marks on this recording: you are held blind on it, or this "
+        "token can no longer read the workspace."
+    ),
+    "withdraw_marks": (
+        "Workbench refused to withdraw marks on this recording: you are held blind on it, or "
+        "this token can no longer read the workspace."
+    ),
+    "request_analysis": (
+        "Workbench refused to start the analysis: only the person who uploaded the recording "
+        "can ask for one."
+    ),
 }
 
 
@@ -352,10 +486,64 @@ def display_name(value: Any) -> str:
     return clean_name(value) or "unknown"
 
 
+#: Response headers that may carry an id for the request, in the order they are read.
+REQUEST_ID_HEADERS = ("X-Request-Id", "X-Cloud-Trace-Context")
+_REQUEST_ID = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+
+
+def request_id_of(response: httpx.Response) -> str | None:
+    """The id the server gave this request, or None when it sent none.
+
+    Read from ``X-Request-Id``, then ``X-Cloud-Trace-Context`` (the trace id before the
+    ``/``), then ``requestId`` in the JSON body or its ``error`` object. Only a short id of
+    plain characters is kept, so it is safe to print.
+    """
+    candidates: list[Any] = []
+    for name in REQUEST_ID_HEADERS:
+        value = response.headers.get(name)
+        if value:
+            candidates.append(value.split("/")[0].split(";")[0].strip())
+    try:
+        body = response.json()
+    except ValueError:
+        body = None
+    if isinstance(body, dict):
+        candidates.append(body.get("requestId"))
+        if isinstance(body.get("error"), dict):
+            candidates.append(body["error"].get("requestId"))
+    for value in candidates:
+        if isinstance(value, str) and _REQUEST_ID.match(value):
+            return value
+    return None
+
+
 def error_from_response(
-    response: httpx.Response, *, login_endpoint: bool = False
+    response: httpx.Response,
+    *,
+    login_endpoint: bool = False,
+    action: str | None = None,
+    have: tuple[str, ...] | None = None,
 ) -> WorkbenchError:
-    """Map a non-200 response to a typed error (contract 3.1 and 5.1)."""
+    """Map a non-200 response to a typed error (contract 3.1, 5.1 and 7.3).
+
+    ``action`` is the agent API action that was sent and ``have`` the token's scopes when
+    known, so the messages can be specific. The error carries the request id when the
+    server sent one.
+    """
+    error = _error_from_response(response, login_endpoint=login_endpoint, action=action, have=have)
+    error.request_id = request_id_of(response)
+    if error.retry_after is None:
+        error.retry_after = _parse_retry_after(response.headers.get("Retry-After"))
+    return error
+
+
+def _error_from_response(
+    response: httpx.Response,
+    *,
+    login_endpoint: bool,
+    action: str | None,
+    have: tuple[str, ...] | None,
+) -> WorkbenchError:
     status = response.status_code
     body: Any = None
     try:
@@ -368,10 +556,7 @@ def error_from_response(
     if status == 404 and login_endpoint:
         return LoginNotAvailable(status=status)
     if status == 404 and not isinstance(code, str):
-        return EarlyAccessRequired(
-            "Agent access is not available on this Workbench server yet (early access).",
-            status=status,
-        )
+        return EarlyAccessRequired(status=status)
     if 300 <= status < 400:
         return UnexpectedResponse(
             "Workbench answered with a redirect, which this client does not follow.",
@@ -379,7 +564,7 @@ def error_from_response(
             status=status,
         )
 
-    if isinstance(code, str) and code in PASSTHROUGH_CODES:
+    if isinstance(code, str) and code in REFUSAL_CODES:
         extra = {k: v for k, v in body.items() if k != "error"} if isinstance(body, dict) else {}
         message = _one_line(error.get("message")) if isinstance(error, dict) else None
         return ServerRefusal(code, message, status=status, extra=extra)
@@ -402,6 +587,8 @@ def error_from_response(
 
     if cls is InvalidArgument:
         detail = _one_line(error.get("message")) if isinstance(error, dict) else None
+        if action in sc.V11_ACTIONS and detail and "unknown action" in detail.lower():
+            return NotOnServer(action, status=status)
         return InvalidArgument(
             f"Workbench did not accept the request: {detail}" if detail else None, status=status
         )
@@ -415,6 +602,18 @@ def error_from_response(
         if not isinstance(attempts, int) or isinstance(attempts, bool):
             attempts = None
         return CodeWrong(status=status, attempts_left=attempts)
+    if cls is ScopeRequired:
+        scope = body.get("scope") if isinstance(body, dict) else None
+        if not isinstance(scope, str) and action is not None:
+            scope = sc.needed(action)
+        return ScopeRequired(
+            scope if isinstance(scope, str) else None, have=have, action=action, status=status
+        )
+    if cls is Forbidden and action in FORBIDDEN_BY_ACTION:
+        return Forbidden(FORBIDDEN_BY_ACTION[action], status=status)
+    if cls is NotAvailable and action in NOT_AVAILABLE_BY_ACTION:
+        message, hint = NOT_AVAILABLE_BY_ACTION[action]
+        return NotAvailable(message, hint=hint, status=status)
     return cls(status=status)
 
 
@@ -426,11 +625,13 @@ class WorkbenchClient:
         *,
         api_base: str | None = None,
         token: str | None = None,
+        scopes: tuple[str, ...] | list[str] | None = None,
         transport: httpx.BaseTransport | None = None,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self.api_base = check_url(api_base.rstrip("/")) if api_base else resolve_api_base()
         self._token = token
+        self._scopes: tuple[str, ...] | None = sc.normalise(scopes) if scopes is not None else None
         self._sleep = sleep
         self._transport = transport
         self._http = httpx.Client(
@@ -455,6 +656,11 @@ class WorkbenchClient:
             api_base=self.api_base, token=token, transport=self._transport, sleep=self._sleep
         )
 
+    @property
+    def scopes(self) -> tuple[str, ...] | None:
+        """The token's scopes when this client knows them (saved with it), else None."""
+        return self._scopes
+
     def __repr__(self) -> str:  # never show the token
         return f"WorkbenchClient(api_base={self.api_base!r})"
 
@@ -470,6 +676,8 @@ class WorkbenchClient:
         if not stored.token:
             raise NotSignedIn()
         self._token = stored.token
+        if self._scopes is None and stored.scopes is not None:
+            self._scopes = stored.scopes
         return stored.token
 
     # -- transport -----------------------------------------------------------
@@ -483,7 +691,9 @@ class WorkbenchClient:
         login_endpoint: bool = False,
     ) -> dict[str, Any]:
         payload = json.dumps(body, separators=(",", ":")).encode("utf-8")
-        if len(payload) > MAX_BODY_BYTES:
+        action = body.get("action")
+        limit = MAX_PROPOSE_BODY_BYTES if action == "propose_marks" else MAX_BODY_BYTES
+        if len(payload) > limit:
             raise InvalidArgument(
                 "The request is too large for Workbench.",
                 hint="Use shorter arguments.",
@@ -492,7 +702,6 @@ class WorkbenchClient:
         if token:
             headers["Authorization"] = f"Bearer {token}"
         url = self.api_base + path
-        action = body.get("action")
 
         response: httpx.Response | None = None
         for attempt in (1, 2):
@@ -523,7 +732,12 @@ class WorkbenchClient:
 
         assert response is not None
         if response.status_code != 200:
-            raise error_from_response(response, login_endpoint=login_endpoint)
+            raise error_from_response(
+                response,
+                login_endpoint=login_endpoint,
+                action=None if login_endpoint else action,
+                have=self._scopes,
+            )
         try:
             data = response.json()
         except ValueError:
@@ -535,21 +749,111 @@ class WorkbenchClient:
     # -- agent API -----------------------------------------------------------
 
     def call(self, action: str, **args: Any) -> dict[str, Any]:
-        """Call one agent API action. Arguments use the contract's names (e.g. ``projectId``)."""
+        """Call one agent API action. Arguments use the contract's names (e.g. ``projectId``).
+
+        When the token's scopes are known and lack the one ``action`` needs, it raises
+        :class:`ScopeRequired` before any call (contract 7.10). A ``None``, empty or "null"
+        ``cursor`` is left out, so it asks for the first page.
+        """
         token = self._resolve_token()
+        self.require_scope(action)
+        if isinstance(args.get("cursor"), str) and args["cursor"].strip() in ("", "null"):
+            args["cursor"] = None  # an agent's "no cursor yet": the first page, not an error
         body = {"action": action, **{k: v for k, v in args.items() if v is not None}}
         return self._post(AGENT_API_PATH, body, token=token)
+
+    def require_scope(self, action: str) -> None:
+        """Raise :class:`ScopeRequired` when the known scopes do not cover ``action``."""
+        need = sc.needed(action)
+        if self._scopes is not None and need not in self._scopes:
+            raise ScopeRequired(need, have=self._scopes, action=action)
+
+    # -- version 1.1 actions (contract section 7) ------------------------------
+
+    def list_members(self) -> dict[str, Any]:
+        return self.call("list_members")
+
+    def list_tasks(self, *, mine: bool = True) -> dict[str, Any]:
+        return self.call("list_tasks", mine=mine)
+
+    def list_nights(self, *, project_id: str | None = None) -> dict[str, Any]:
+        return self.call("list_nights", projectId=project_id)
+
+    def list_layers(self, *, project_id: str | None = None) -> dict[str, Any]:
+        return self.call("list_layers", projectId=project_id)
+
+    def get_events(
+        self,
+        recording_id: str,
+        *,
+        kind: str | None = None,
+        cursor: str | None = None,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        return self.call("get_events", id=recording_id, kind=kind, cursor=cursor, limit=limit)
+
+    def get_stages(self, recording_id: str, *, source: str = "machine") -> dict[str, Any]:
+        return self.call("get_stages", id=recording_id, source=source)
+
+    def get_quality(self, recording_id: str) -> dict[str, Any]:
+        return self.call("get_quality", id=recording_id)
+
+    def list_marks(
+        self,
+        recording_id: str,
+        *,
+        origin: str | None = None,
+        cursor: str | None = None,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        return self.call("list_marks", id=recording_id, origin=origin, cursor=cursor, limit=limit)
+
+    def propose_marks(
+        self, recording_id: str, marks: list[dict[str, Any]], *, op_id: str | None = None
+    ) -> dict[str, Any]:
+        return self.call("propose_marks", id=recording_id, marks=marks, opId=op_id)
+
+    def withdraw_marks(
+        self, recording_id: str, *, mark_ids: list[str] | None = None
+    ) -> dict[str, Any]:
+        return self.call("withdraw_marks", id=recording_id, markIds=mark_ids)
+
+    def create_review_task(
+        self,
+        recording_ids: list[str],
+        *,
+        member_id: str,
+        mode: str,
+        confirm_machine_seen: bool = False,
+    ) -> dict[str, Any]:
+        return self.call(
+            "create_review_task",
+            ids=recording_ids,
+            memberId=member_id,
+            mode=mode,
+            confirmMachineSeen=confirm_machine_seen or None,
+        )
+
+    def request_analysis(self, recording_id: str) -> dict[str, Any]:
+        return self.call("request_analysis", id=recording_id)
 
     # -- terminal sign-in (contract section 5) -------------------------------
 
     def cli_login_start(
-        self, *, device_name: str, client_version: str = __version__
+        self,
+        *,
+        device_name: str,
+        client_version: str = __version__,
+        scopes: list[str] | tuple[str, ...] | None = None,
     ) -> dict[str, Any]:
-        body = {
+        body: dict[str, Any] = {
             "action": "start",
             "deviceName": device_name[:64],
             "clientVersion": client_version[:32],
         }
+        if scopes is not None and tuple(scopes) != (sc.READ,):
+            # A version 1 server ignores keys it does not know; read alone is the default.
+            body["scopes"] = list(sc.normalise(scopes))
         data = self._post(CLI_LOGIN_PATH, body, token=None, login_endpoint=True)
         for key in ("sessionId", "pollSecret", "approvalUrl"):
             if not isinstance(data.get(key), str):

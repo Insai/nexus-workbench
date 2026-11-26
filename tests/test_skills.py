@@ -15,12 +15,15 @@ SKILLS = ROOT / "skills"
 SKILL_DIRS = sorted(p for p in SKILLS.iterdir() if p.is_dir() and not p.name.startswith("."))
 
 #: A backticked word that looks like a tool name.
-TOOL_LIKE = re.compile(r"`((?:whoami|list|get|inspect|check|compute|compare)(?:_[a-z]+)*)`")
+TOOL_LIKE = re.compile(
+    r"`((?:whoami|list|get|inspect|check|compute|compare|propose|withdraw|create|request"
+    r"|preprocess)(?:_[a-z]+)*)`"
+)
+RESEARCH_USE = "For research use only. Not for clinical decision-making."
 
 
 def tool_names() -> set[str]:
-    specs = mcp_server.workspace_tools(mcp_server.default_client_factory)
-    return {s.name for s in specs + mcp_server.local_tools()}
+    return {s.name for s in mcp_server.all_tools(mcp_server.default_client_factory)}
 
 
 def front_matter(text: str) -> dict[str, str]:
@@ -33,9 +36,22 @@ def front_matter(text: str) -> dict[str, str]:
     return fields
 
 
-def test_ten_skills_and_nine_tools() -> None:
-    assert len(SKILL_DIRS) == 10
-    assert len(tool_names()) == 9
+def test_thirteen_skills_and_twenty_two_tools() -> None:
+    assert len(SKILL_DIRS) == 13
+    assert len(tool_names()) == 22
+
+
+@pytest.mark.parametrize("skill", SKILL_DIRS, ids=lambda p: p.name)
+def test_skill_structure(skill: Path) -> None:
+    """Every skill: the research-use line under the title, handling rules, and a report."""
+    text = (skill / "SKILL.md").read_text(encoding="utf-8")
+    body = text.split("---\n", 2)[2]
+    lines = [line for line in body.splitlines() if line.strip()]
+    assert lines[0].startswith("# ")
+    assert lines[1] == RESEARCH_USE
+    assert "\n## Handling rules\n" in body
+    assert "\n## Report\n" in body
+    assert "\u2014" not in text  # no em dashes
 
 
 @pytest.mark.parametrize("skill", SKILL_DIRS, ids=lambda p: p.name)

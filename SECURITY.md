@@ -33,7 +33,10 @@ Only the latest release gets security fixes. Update with
 - **The network.** The local tools make no network calls. The workspace tools and sign-in
   call the Workbench API over HTTPS only. They send your token in the `Authorization`
   header and the request itself. Sign-in also sends this computer's name and the package
-  version. Nothing else is sent anywhere.
+  version. Once a day at most, the MCP server and `doctor` ask PyPI's public JSON API
+  for the newest `nexus-workbench` version (a plain GET with the package version in the
+  user agent); `NEXUS_WORKBENCH_NO_UPDATE_CHECK=1` turns that off. Nothing else is sent
+  anywhere.
 - **No telemetry.** The package collects no usage data, crash reports or analytics.
 - **Your agent's config.** `setup` registers the MCP server with `claude mcp add` and
   `codex mcp add`, and copies skill folders (each marked with a `.nexus-workbench` file)
@@ -42,8 +45,12 @@ Only the latest release gets security fixes. Update with
 
 ## Tokens
 
-- A token is read-only (`read` scope), belongs to one person and one workspace, and
-  expires after 90 days by default.
+- A token reads (`read` scope) unless the person chose more scopes when it was made
+  (`detail`, `marks:write`, `tasks:write`, `analysis:run`). Scopes never widen later. A
+  token belongs to one person and one workspace, and expires after 90 days by default.
+- Writes need a write scope and the workspace's agent writes switch, which Insai sets.
+  Proposed marks land as a review layer and never change anyone's scoring; every write
+  leaves one row in the workspace's audit log.
 - It is saved in `credentials.json` in your user config folder, with permissions `600`
   (only you can read it) on macOS and Linux. On Windows the file sits in your own
   `%LOCALAPPDATA%` folder. The package refuses a credentials file other users can read.

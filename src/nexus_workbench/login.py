@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any, TextIO
 
 from . import auth
+from . import scopes as sc
 from .client import (
     CONNECT_PAGE_HINT,
     CodeWrong,
@@ -26,6 +27,7 @@ from .client import (
     Unauthenticated,
     WorkbenchClient,
     WorkbenchError,
+    WriteAccessRequired,
     display_name,
     safe_text,
 )
@@ -36,6 +38,11 @@ MAX_LOCAL_RETRIES = 10
 MAX_PENDING_REPLIES = 10
 DEVICE_NAME_LIMIT = 64
 FALLBACK_DEVICE_NAME = "computer"
+#: Printed when a sign-in asks for a write scope (contract 7.9).
+WRITE_SCOPES_NOTE = (
+    "Write scopes can be approved only in a workspace where Insai has switched agent writes "
+    "on. Elsewhere the approval page refuses them; sign in again without them."
+)
 
 
 class LoginFailed(Exception):
@@ -117,6 +124,12 @@ def sign_in_failure(exc: WorkbenchError) -> LoginFailed:
             f"Too many sign-in requests to Workbench. Try again in {wait} "
             "with `nexus-workbench login`."
         )
+    if isinstance(exc, WriteAccessRequired):
+        return LoginFailed(
+            "Workbench refused to approve write scopes: this workspace does not take agent "
+            "writes yet. Ask Insai to switch them on, or sign in without write scopes, for "
+            "example `nexus-workbench login --scope detail`."
+        )
     # Token limit, early access, network and the rest already read as one clear sentence.
     return LoginFailed(str(exc))
 
@@ -142,6 +155,10 @@ class LoginResult:
     where: str  # "file" or "keyring"
     whoami: dict[str, Any] | None
     whoami_error: WorkbenchError | None
+    #: The token's scopes as the server reported them, or None when it did not say.
+    scopes: tuple[str, ...] | None = None
+    #: The scopes this sign-in asked for (browser flow only).
+    requested: tuple[str, ...] | None = None
 
 
 def read_token(io: LoginIO) -> str:
@@ -175,8 +192,13 @@ def _finish(
     use_keyring: bool,
     token_id_value: str | None = None,
     workspace_id: str | None = None,
+    scopes: Any = None,
+    requested: tuple[str, ...] | None = None,
 ) -> LoginResult:
-    """Check the token with whoami, then save it. A token the server refuses is not saved."""
+    """Check the token with whoami, then save it. A token the server refuses is not saved.
+
+    ``scopes`` are the ones ``exchange`` returned; otherwise ``whoami``'s are saved.
+    """
     auth.validate_token(token)
     probe = client.with_token(token)
     whoami: dict[str, Any] | None = None
@@ -193,14 +215,30 @@ def _finish(
         workspace_id = workspace_id or whoami["workspace"].get("id")
     if whoami and isinstance(whoami.get("token"), dict):
         token_id_value = token_id_value or whoami["token"].get("id")
+    granted = _scope_list(scopes)
+    if granted is None and whoami:
+        granted = _scope_list(whoami.get("scopes"))
     where = auth.save_token(
         client.api_base,
         token,
         workspace_id=workspace_id,
         token_id_value=token_id_value,
+        scopes=granted,
         use_keyring=use_keyring,
     )
-    return LoginResult(where=where, whoami=whoami, whoami_error=whoami_error)
+    return LoginResult(
+        where=where,
+        whoami=whoami,
+        whoami_error=whoami_error,
+        scopes=granted,
+        requested=requested,
+    )
+
+
+def _scope_list(value: Any) -> tuple[str, ...] | None:
+    if not isinstance(value, list) or not all(isinstance(s, str) for s in value):
+        return None
+    return sc.normalise(value)
 
 
 def login_with_token(client: WorkbenchClient, io: LoginIO, *, use_keyring: bool) -> LoginResult:
@@ -212,15 +250,25 @@ def login_with_token(client: WorkbenchClient, io: LoginIO, *, use_keyring: bool)
     return _finish(client, token, use_keyring=use_keyring)
 
 
-def login_with_browser(client: WorkbenchClient, io: LoginIO, *, use_keyring: bool) -> LoginResult:
+def login_with_browser(
+    client: WorkbenchClient,
+    io: LoginIO,
+    *,
+    use_keyring: bool,
+    scopes: tuple[str, ...] = (sc.READ,),
+) -> LoginResult:
     """Browser approval flow. Raises LoginNotAvailable when the server does not offer it."""
+    requested = sc.normalise(scopes)
     try:
-        session = client.cli_login_start(device_name=device_name())
+        session = client.cli_login_start(device_name=device_name(), scopes=requested)
     except LoginNotAvailable:
         raise
     except WorkbenchError as exc:
         raise sign_in_failure(exc) from None
     url = session["approvalUrl"]
+    io.say(f"Asking for scopes: {sc.describe(requested)}")
+    if sc.WRITE & set(requested):
+        io.say(WRITE_SCOPES_NOTE)
     io.say("To sign in, approve this computer in Workbench:")
     io.say(f"  {url}")
     # The URL is printed above, so a browser that does not open is not an error.
@@ -297,6 +345,8 @@ def login_with_browser(client: WorkbenchClient, io: LoginIO, *, use_keyring: boo
         use_keyring=use_keyring,
         token_id_value=data.get("tokenId"),
         workspace_id=data.get("workspaceId"),
+        scopes=data.get("scopes"),
+        requested=requested,
     )
 
 
@@ -306,14 +356,24 @@ def run_login(
     *,
     token_prompt: bool = False,
     use_keyring: bool = False,
+    scopes: tuple[str, ...] = (sc.READ,),
 ) -> LoginResult:
-    """``login``: the browser flow first, else (or with --token) a pasted token."""
+    """``login``: the browser flow first, else (or with --token) a pasted token.
+
+    ``scopes`` are asked for in the browser flow. A pasted token has the scopes it was made
+    with on the page.
+    """
     if not token_prompt:
         try:
-            return login_with_browser(client, io, use_keyring=use_keyring)
+            return login_with_browser(client, io, use_keyring=use_keyring, scopes=scopes)
         except LoginNotAvailable:
             io.say("Signing in from the terminal is not available yet, so use a token instead.")
             io.say(CONNECT_PAGE_HINT)
+    if sc.normalise(scopes) != (sc.READ,):
+        io.say(
+            "A pasted token keeps the scopes it was made with on the page; "
+            "--scope does not change them."
+        )
     return login_with_token(client, io, use_keyring=use_keyring)
 
 
@@ -328,4 +388,11 @@ def describe_result(result: LoginResult, io: LoginIO) -> None:
         io.say("Token saved.")
         if result.whoami_error is not None:
             print(f"Workbench could not confirm it yet: {result.whoami_error}", file=io.err)
+    if result.scopes is not None:
+        io.say(f"Scopes: {sc.describe(result.scopes)}")
+        left_out = [s for s in result.requested or () if s not in result.scopes]
+        if left_out:
+            io.say(
+                "Workbench approved fewer scopes than asked; left out: " + ", ".join(left_out) + "."
+            )
     io.say(f"Saved in {where}.")

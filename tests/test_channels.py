@@ -286,8 +286,8 @@ REFUSALS = [
     ({"device_crossed": True}, "device_crossed", 3, "fix the device"),
     ({"external": True, "checked": True}, "insai_checked", 3, "Ask Insai"),
     ({"header_unparsed": True}, "header_unparsed", 3, "Ec/Et ports"),
-    ({"scopes": {"read"}}, "scope_required", 4, "channels:write scope"),
-    ({"agent_write": False}, "write_access_required", 4, "Ask Insai"),
+    ({"scopes": {"read"}}, "scope_required", 4, "`nexus-workbench login --scope channels:write`"),
+    ({"agent_write": False}, "write_access_required", 4, "switch agent writes on"),
     ({"enabled": False}, "not_available", 1, "not switched on"),
 ]
 
@@ -415,14 +415,66 @@ def test_clear_over_an_insai_check_is_refused(
 # -- client passthrough -----------------------------------------------------------------------
 
 
-def test_scope_required_keeps_its_code_and_scope() -> None:
+def test_scope_required_is_the_typed_error_with_the_login_command() -> None:
     response = httpx.Response(
         403,
         json={"error": {"code": "scope_required", "message": "No."}, "scope": "channels:write"},
     )
-    error = c.error_from_response(response)
+    error = c.error_from_response(response, action="set_channels", have=("read", "detail"))
+    assert isinstance(error, c.ScopeRequired)
+    assert error.code == "scope_required" and error.scope == "channels:write"
+    assert error.login == "nexus-workbench login --scope detail --scope channels:write"
+    assert error.message == "This token cannot set channel sites."
+
+
+def test_scope_required_without_a_scope_key_uses_the_actions_scope() -> None:
+    response = httpx.Response(403, json={"error": {"code": "scope_required", "message": "No."}})
+    error = c.error_from_response(response, action="set_channels")
+    assert isinstance(error, c.ScopeRequired) and error.scope == "channels:write"
+
+
+@pytest.mark.parametrize(
+    ("code", "cls"),
+    [("write_access_required", c.WriteAccessRequired), ("not_available", c.NotAvailable)],
+)
+def test_switch_codes_are_mains_typed_errors(code: str, cls: type[c.WorkbenchError]) -> None:
+    status = 501 if code == "not_available" else 403
+    response = httpx.Response(status, json={"error": {"code": code, "message": "No."}})
+    error = c.error_from_response(response, action="set_channels")
+    assert type(error) is cls and error.code == code
+
+
+def test_not_available_on_channels_names_channel_sites() -> None:
+    response = httpx.Response(501, json={"error": {"code": "not_available", "message": "No."}})
+    error = c.error_from_response(response, action="get_channels")
+    assert "Channel sites are not switched on" in error.message
+
+
+@pytest.mark.parametrize(
+    ("status", "code", "extra"),
+    [
+        (409, "changed", {"current": {"version": 2, "ports": {}, "checked": False}}),
+        (409, "ambiguous_label", {"candidates": ["a" * 24, "b" * 24]}),
+        (503, "unavailable", {}),
+        (403, "held", {}),
+    ],
+)
+def test_channel_refusals_keep_code_message_and_extra(
+    status: int, code: str, extra: dict[str, Any]
+) -> None:
+    body = {"error": {"code": code, "message": "The server's own sentence."}, **extra}
+    error = c.error_from_response(httpx.Response(status, json=body))
     assert isinstance(error, c.ServerRefusal)
-    assert error.code == "scope_required" and error.extra == {"scope": "channels:write"}
+    assert error.code == code and error.message == "The server's own sentence."
+    assert error.extra == extra
+
+
+def test_channels_write_is_a_write_scope() -> None:
+    from nexus_workbench import scopes as sc
+
+    assert sc.ALL[-1] == "channels:write" and "channels:write" in sc.WRITE
+    assert sc.needed("set_channels") == "channels:write" and sc.needed("get_channels") == "read"
+    assert "set_channels" not in sc.V11_ACTIONS
 
 
 def test_unknown_403_is_still_forbidden() -> None:

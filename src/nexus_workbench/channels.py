@@ -44,7 +44,6 @@ REFUSAL_FIXES: dict[str, str] = {
     "no_source_key": "Workbench cannot tell which file this recording is. Ask Insai.",
     "header_unparsed": "Only recordings whose rows are the Ec/Et ports (a DIN adapter) take sites.",
     "incomplete": "Place all four ports, or save with --unchecked.",
-    "not_available": "Channel sites are not switched on for this Workbench server yet.",
     "unavailable": "Workbench could not read the recording's file header. Try again in a minute.",
 }
 #: Codes about naming the recording, not about the change.
@@ -65,12 +64,6 @@ AUTH_CODES = frozenset(
         "write_access_required",
     }
 )
-AUTH_FIXES: dict[str, str] = {
-    "scope_required": "Make a token with the channels:write scope (Workbench: account menu, "
-    "Connect an agent), then run `nexus-workbench login --token`.",
-    "write_access_required": "This workspace does not take agent writes yet. Ask Insai to "
-    "switch them on.",
-}
 #: Codes that are not refusals but still need the server's word (exit 1).
 NOT_REFUSAL = frozenset({"not_available", "unavailable"})
 
@@ -98,7 +91,10 @@ def exit_code(code: str) -> int:
 
 
 def fix_for(code: str) -> str:
-    return AUTH_FIXES.get(code) or REFUSAL_FIXES.get(code) or LOOKUP_FIXES.get(code, "")
+    """What to do about a channel refusal or lookup code. Sign-in, scope, write-access and
+    ``not_available`` errors carry their own fix (the client's typed errors), so this is empty
+    for them."""
+    return REFUSAL_FIXES.get(code) or LOOKUP_FIXES.get(code, "")
 
 
 # ---------------------------------------------------------------------------

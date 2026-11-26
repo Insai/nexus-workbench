@@ -13,7 +13,7 @@ body:
     id: idea
     attributes:
       label: What would help
-      description: A tool, an argument, a skill or a docs change. Keep in mind that every tool is read-only.
+      description: A tool, an argument, a skill or a docs change. Keep in mind that tools read by default, and writes are scoped proposals that members review.
   - type: textarea
     id: other
     attributes:

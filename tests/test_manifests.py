@@ -42,6 +42,7 @@ VERSION_FILES = [
     "src/nexus_workbench/__init__.py",
     ".claude-plugin/plugin.json",
     ".codex-plugin/plugin.json",
+    "server.json",
     "CHANGELOG.md",
 ]
 
@@ -54,13 +55,13 @@ def _copy_version_files(dest: Path) -> Path:
     return dest
 
 
-def test_all_four_versions_in_sync() -> None:
+def test_all_versions_in_sync() -> None:
     found = bump_version.read_versions()
-    assert len(found) == 4
+    assert len(found) == 5
     assert set(found.values()) == {__version__}
 
 
-def test_bump_sets_all_four(tmp_path: Path) -> None:
+def test_bump_sets_every_file(tmp_path: Path) -> None:
     root = _copy_version_files(tmp_path)
     bump_version.write_version("9.8.7", root)
     assert set(bump_version.read_versions(root).values()) == {"9.8.7"}
@@ -70,6 +71,10 @@ def test_bump_sets_all_four(tmp_path: Path) -> None:
         after = json.loads((root / name).read_text(encoding="utf-8"))
         before["version"] = "9.8.7"
         assert after == before
+    before = json.loads((ROOT / "server.json").read_text(encoding="utf-8"))
+    after = json.loads((root / "server.json").read_text(encoding="utf-8"))
+    before["version"] = before["packages"][0]["version"] = "9.8.7"
+    assert after == before
 
 
 def test_check_release_refuses_dev_version(tmp_path: Path) -> None:
@@ -112,3 +117,17 @@ def test_changelog_has_section_for_current_version() -> None:
     release = __version__.split(".dev")[0]
     text = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     assert changelog_notes.section(release, text)
+
+
+def test_insai_package_is_consistent() -> None:
+    """The `insai` package: one version in both places, and it installs nexus-workbench."""
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1] / "packages" / "insai"
+    pyproject = (root / "pyproject.toml").read_text()
+    init = (root / "src" / "insai" / "__init__.py").read_text()
+    version = re.search(r'^version = "([^"]+)"', pyproject, re.M).group(1)
+    assert re.search(r'__version__ = "([^"]+)"', init).group(1) == version
+    assert re.search(r'^dependencies = \["nexus-workbench[^"]*"\]', pyproject, re.M)
+    assert 'insai = "nexus_workbench.cli:main"' in pyproject

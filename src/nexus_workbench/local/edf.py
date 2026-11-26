@@ -402,11 +402,16 @@ def _num(x: float, w: int = 8) -> str:
     return s
 
 
+def header_number(x: float) -> float:
+    """``x`` as an EDF header holds it: what the 8-character field reads back as."""
+    return float(_num(x))
+
+
 def digitise(
     x: np.ndarray, phys_min: float, phys_max: float, dig_min: int = -32768, dig_max: int = 32767
 ) -> np.ndarray:
     """Physical to int16 with the header's own 8-character range. NaN becomes 0 physical."""
-    pmin, pmax = float(_num(phys_min)), float(_num(phys_max))
+    pmin, pmax = header_number(phys_min), header_number(phys_max)
     y = np.asarray(x, np.float64)
     y = np.where(np.isfinite(y), y, 0.0)
     y = np.clip(y, min(pmin, pmax), max(pmin, pmax))

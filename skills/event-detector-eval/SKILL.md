@@ -1,6 +1,6 @@
 ---
 name: event-detector-eval
-description: Evaluate detected sleep events (spindles, arousals, K-complexes, any onset and duration events) against reference events with overlap matching, F1, false positives per hour and a shuffled chance baseline. Use when the researcher asks "how good is my spindle detector", "compare detected events with the scoring", "event F1", "false positives per hour", "is this better than chance", or "match these events".
+description: Evaluate detected sleep events (spindles, arousals, K-complexes, any onset and duration events) against reference events with overlap matching, F1, false positives per hour and a shuffled chance baseline, from files or from a Workbench recording's machine events. Use when the researcher asks "how good is my spindle detector", "compare detected events with the scoring", "compare my detector with Workbench's events", "event F1", "false positives per hour", "is this better than chance", or "match these events".
 ---
 
 # Event detector evaluation
@@ -11,7 +11,7 @@ For research use only. Not for clinical decision-making.
 match. It also gives a shuffled null: the F1 that events with the same count and
 durations reach at unrelated times. A detector result means something only against that
 null. This package has no detector; the candidate events come from the researcher's own
-detector or another scorer.
+detector, another scorer, or a Workbench recording's machine events.
 
 ## Handling rules
 
@@ -49,6 +49,7 @@ report all of them, not the best one.
 1. Check both files cover the same recording and use the same time origin. An offset
    between the files drives F1 toward the null. Ask if unsure.
 2. Call `compare_events` with `reference_path`, `candidate_path` and the agreed arguments.
+   For workspace events, see the next section.
 3. Read the result.
 
 | Key | Meaning |
@@ -60,6 +61,30 @@ report all of them, not the best one.
 | `falsePositivesPerHour` | `extra / recordingHours`; `null` without `recording_hours`. |
 | `matching` | Rule (greedy one to one, closest midpoint first), `minOverlapSec`, `toleranceSec`. |
 | `shuffledNull` | `method`, `seed`, `nShuffles`, `reduced`, `f1Mean`, `f1P95`, `recallMean`. |
+
+## Evaluate on workspace events
+
+A Workbench recording's machine events can stand in for one side. This needs sign-in with
+the `detail` scope (the connect-workbench skill).
+
+1. Find the recording with `list_recordings` and check `hasEvents`. Read its length
+   (`durationSec`) with `get_recording` and pass `recording_hours` from it.
+2. Optionally look at one page with `get_events` to see `kinds` and the channel positions.
+3. Call `compare_events` with `recording_id` and the path of the other side only. Leave out
+   `reference_path` to use the workspace events as the reference, or `candidate_path` to
+   use them as the candidate. Decide which before the first call, as for files.
+4. Pass `label` as the event kind (for example `spindle`). It picks the kind read from the
+   workspace and filters the file side the same way.
+5. The workspace side is named `workspace:<recording id>:machine` in the result.
+   `get_events` sends one row per channel for an event seen on several channels; the
+   comparison keeps each such event once, as `eventCounts` does.
+6. The researcher's file must use seconds from the start of the same recording. Workbench
+   times are seconds from the recording start.
+
+If the tool answers that you are blinded on the recording, the machine events are
+withheld by design. Do not try to infer them; compare on another recording or stop.
+Machine events are one detector's output, not ground truth. Do not call them the truth
+unless the researcher says so.
 
 ## Reading the null
 
@@ -108,7 +133,7 @@ report all of them, not the best one.
 ## Report
 
 ```
-Events, reference <fileIdReference>, candidate <fileIdCandidate>, label <label or all>.
+Events, reference <fileIdReference>, candidate <fileIdCandidate> (workspace:<id>:machine when from Workbench), label <label or all>.
 Matching: greedy one to one, min overlap <minOverlapSec> s, tolerance <toleranceSec> s (set before the run).
 Reference <reference>, candidate <candidate>: matched <matched>, missed <missed>, extra <extra>.
 Precision <precision>, recall <recall>, F1 <f1>; false positives <falsePositivesPerHour> per hour.

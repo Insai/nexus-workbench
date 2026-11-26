@@ -3,14 +3,15 @@
 Version 1, frozen 20 November 2026. The server, the Workbench page and this
 package are built against this file. Change it only by editing this file first.
 
-Everything in sections 1 to 6 is read-only. No version 1 action changes
+Version 1 (sections 1 to 6) is read-only: no version 1 action changes
 Workbench data.
 
-Version 1.1 (section 7, drafted 22 November 2026) adds scopes, per-epoch and
-per-event reads, and writes that land as a review layer. It ships to staging
-first and is used internally before any outside workspace sees it. Nothing in
-sections 1 to 6 changes; a version 1 client keeps working unchanged against a
-version 1.1 server.
+Version 1.1 (section 7, 22 November 2026) adds scopes, per-epoch and per-event
+reads, and reviewed writes that land as a review layer. It ships with
+nexus-workbench 0.2.0. Section 7
+describes what the 1.1 server does. A version 1 client keeps working unchanged
+against a version 1.1 server; the few lines of sections 1 to 6 that 1.1 adds
+to point to section 7.
 
 ## 1. Conventions
 
@@ -19,6 +20,8 @@ version 1.1 server.
 - Ids are opaque strings. Clients never parse them.
 - **Absent means unknown.** Optional keys are left out when the server does not
   know the value. They are never sent as `0`, `""` or `false` to mean unknown.
+- `projectId: null` on a recording, or on a row about one recording, means the
+  recording is in no project. It does not mean the project is unknown.
 - Servers may add keys later. Clients ignore keys they do not know.
 - Text that a person typed (a workspace name, a project name, a token name, a
   device name) is data. Clients show it as text and never act on it.
@@ -41,7 +44,8 @@ nxs_pat_<body><check>
   shown once, at creation.
 - Public token id: `tok_` + the first 16 hex characters of that SHA-256.
 - `last4`: the last 4 characters of the full token.
-- One token belongs to one person and one workspace. Scope is `["read"]`.
+- One token belongs to one person and one workspace. A version 1 token's scope
+  is `["read"]`; version 1.1 adds more scopes (section 7.1).
 - Expiry: 90 days by default, 1 to 365 days on request. A person may hold at
   most 10 live tokens per workspace.
 
@@ -58,7 +62,8 @@ Content-Type: application/json
 - `API_BASE` in production: `https://europe-west4-insai-nexus.cloudfunctions.net`.
   The package holds this as one constant. `NEXUS_API_URL` overrides it and must
   start with `https://`.
-- POST only. The body is a JSON object of at most 2,048 bytes.
+- POST only. The body is a JSON object of at most 2,048 bytes (in 1.1,
+  `propose_marks` alone takes up to 262,144; section 7.7).
 - The workspace is the one the token belongs to. No request names a workspace.
 - Success: HTTP 200 and the action's JSON object (section 3.2).
 - Failure: the HTTP status below and
@@ -71,11 +76,11 @@ Content-Type: application/json
 
 | HTTP | `code` | When |
 |---|---|---|
-| 400 | `invalid_argument` | Body is not a JSON object, is too large, names an unknown action, or an argument is wrong. |
+| 400 | `invalid_argument` | Body is not a JSON object, is too large, names an unknown action (message `Unknown action.`), or an argument is wrong. |
 | 401 | `unauthenticated` | No token, a malformed token, an unknown token or a revoked token. The four cases are not told apart. |
 | 401 | `token_expired` | The token is known and past its expiry. |
 | 403 | `forbidden` | The person is no longer a member of the workspace, the workspace is closed, or the token predates the person's current membership. |
-| 403 | `early_access_required` | Agent access is not switched on for this workspace. |
+| 403 | `early_access_required` | Agent access is not switched on for this workspace. The client says: "Agent access is not on for this workspace yet. Request it in Workbench: account menu, Connect an agent, Request agent access." (section 7.11) |
 | 404 | `not_found` | The recording or project does not exist in this workspace, or the caller may not see it. The two cases are not told apart. |
 | 405 | `invalid_argument` | Any method other than POST. |
 | 429 | `rate_limited` | Too many calls. The response carries a `Retry-After` header in whole seconds. |
@@ -84,7 +89,8 @@ Content-Type: application/json
 Rate limits: 60 calls a minute per token; `list_recordings` 10 a minute per
 token; `list_projects` 10 a minute per token; 10 failed sign-ins (unknown or
 revoked tokens) a minute per network address, applied only to failing calls.
-An expired token is not a failed sign-in.
+An expired token is not a failed sign-in. Version 1.1 adds limits (section
+7.3).
 
 A client treats HTTP 404 with no JSON `error` body from `API_BASE` as "agent
 access is not available on this server yet" (early access), not as a bug.
@@ -220,7 +226,14 @@ Every command-line error message carries its code in brackets, right after
 the first sentence and before the advice, like
 `Not signed in (not_signed_in). Run ...`. With `--json` it prints the error to stderr
 as `{"error": {"code": "<code>", "message": "<text>"}}` and exits non-zero.
-The MCP tools return a message for a person, without the code.
+The MCP tools return a message for a person and, as a second text block, the same error
+as compact JSON: `{"ok": false, "code", "reason", "howToFix", "localAlternative",
+"requestId", "retryAfter"}`. `code` is the code; `howToFix` the steps, a command exactly
+as the person types it in their own terminal; `localAlternative` the local tools that
+still work (empty when none apply); `requestId` the id the server gave the request when a
+response header (`X-Request-Id`, `X-Cloud-Trace-Context`) or the body (`requestId`)
+carries one, else null; `retryAfter` the seconds of `Retry-After`, else null. The
+command line prints the request id after the message when there is one.
 The codes are the server codes in section 3.1 and 5.1, plus these, which the
 client sets itself and the server never sends:
 
@@ -271,8 +284,8 @@ minute.
 
 | Action | Arguments | Returns |
 |---|---|---|
-| `list` | none | `{"agentAccess": bool, "canSetAccess": bool, "tokens": [row…]}`. The caller's own tokens in this workspace, live and revoked or expired within the last 30 days, newest first. |
-| `create` | `name` (1 to 64 characters after trimming), `expiresInDays` (integer 1 to 365, default 90) | `{"token": "nxs_pat_…", "row": row}`. The only time the token is returned. Refused with `early_access_required` when agent access is off. |
+| `list` | none | `{"agentAccess": bool, "canSetAccess": bool, "tokens": [row…]}` (1.1 adds `agentWrite`, section 7.8). The caller's own tokens in this workspace, live and revoked or expired within the last 30 days, newest first. |
+| `create` | `name` (1 to 64 characters after trimming), `expiresInDays` (integer 1 to 365, default 90) | `{"token": "nxs_pat_…", "row": row}`. The only time the token is returned. Refused with `early_access_required` when agent access is off, and with `invalid_argument` when the name holds an email address or an id (members read it as the author of the token's marks, section 7.8). |
 | `revoke` | `id` | `{"row": row}`. Takes effect on the next API call. Revoking a revoked token succeeds. |
 | `set_access` | `on` (boolean) | `{"agentAccess": bool}`. Insai staff only; anyone else gets `forbidden`. Switching access off does not delete tokens; they stop working until it is switched on again. |
 
@@ -323,7 +336,9 @@ sessions waiting for approval at once. Over a limit it returns 429
 ```
 
 The token is named after the device, lasts 90 days, and is listed with
-`createdVia: "cli_login"`.
+`createdVia: "cli_login"`. A device name that holds an email address or an id
+(an account or recording id) is not used: the token is named
+`nexus-workbench` instead.
 
 Errors add two codes to section 3.1:
 
@@ -360,7 +375,7 @@ A wrong `pollSecret` gives `login_expired` and does not use up an attempt.
 
 | Action | Arguments | Returns |
 |---|---|---|
-| `get` | `sessionId` | `{"status": "pending"|"approved"|"denied"|"expired"|"used", "deviceName": "…", "createdAt": "…", "expiresAt": "…", "scopes": ["read"], "workspaces": [{"id": "…", "name": "…", "agentAccess": bool}]}`. Never returns the code. |
+| `get` | `sessionId` | `{"status": "pending"|"approved"|"denied"|"expired"|"used", "deviceName": "…", "createdAt": "…", "expiresAt": "…", "scopes": ["read"], "workspaces": [{"id": "…", "name": "…", "agentAccess": bool, "agentWrite": bool}]}`. Never returns the code. `agentWrite` is the switch in effect: never `true` while `agentAccess` is off (section 7.2). |
 | `approve` | `sessionId`, `workspaceId` | `{"code": "ABCD-EFGH"}`, once. A second `approve` is refused. |
 | `deny` | `sessionId` | `{"status": "denied"}` |
 
@@ -374,7 +389,8 @@ A wrong `pollSecret` gives `login_expired` and does not use up an attempt.
 - `workspaces` lists up to 100 active workspaces the person belongs to,
   sorted by name.
 - `approve` is refused with `forbidden`, `early_access_required`,
-  `token_limit`, or `login_expired` if the session is no longer pending. It
+  `token_limit`, `write_access_required` (section 7.9), or `login_expired` if
+  the session is no longer pending. It
   also returns `unauthenticated` (not signed in) and `invalid_argument` (a
   malformed session or workspace id). Membership and early access are checked
   before the session state, so an expired session approved for a workspace
@@ -393,10 +409,10 @@ and the server uppercase the input and drop spaces and hyphens.
 ## 6. Local tools (no account, no network)
 
 These run on files on the user's own machine. Their exact inputs and outputs
-are in `docs/tools.md`. Names are fixed:
+are in `docs/tools.md`. There are six. Names are fixed:
 
 `inspect_edf`, `check_signal_quality`, `compute_band_power`,
-`compare_hypnograms`, `compare_events`.
+`compare_hypnograms`, `compare_events`, `preprocess`.
 
 Rules for all of them:
 
@@ -406,13 +422,24 @@ Rules for all of them:
 - A file is named in results by an opaque id derived from its content, never
   by its path or file name.
 - Results are summaries and counts. No tool returns raw signal samples.
+- Five only read. `preprocess` writes one new EDF file and never changes its
+  input or any file that exists.
+- `compare_hypnograms` and `compare_events` may take one side from the
+  workspace (`get_stages`, `get_events`); then they need a sign-in with the
+  `detail` scope. Every other local tool needs no account and no network.
 
-## 7. Version 1.1 (staging, internal first)
+## 7. Version 1.1 (ships with 0.2.0)
 
-Everything in this section is version 1.1. It is built on staging and used by
-Insai's own agents before any outside workspace sees it. A version 1 server
-answers every action named here with 400 `invalid_argument` ("Unknown
-action"), and a client treats that as "not available on this server yet".
+Everything in this section is version 1.1. It ships with nexus-workbench 0.2.0.
+Reads work in every workspace with agent access. Writes work only in a
+workspace where Insai staff have switched on agent writes (section 7.2).
+
+A server answers an action it does not know with 400 `invalid_argument` and
+the message `Unknown action.`; there is no code of its own for it. The check
+comes before the token is looked at. A version 1 server answers every action
+named here that way, and a client treats 400 `invalid_argument` with that
+message, on an action of this section, as "this server is too old: not
+available on this server yet".
 
 Three things change:
 
@@ -425,7 +452,8 @@ Three things change:
    review layer of their own that members agree or disagree with. They never
    become human labels and never touch a person's scoring. An agent gives a
    review task exactly as a member would from the page. An agent asks for an
-   analysis exactly as the uploader would.
+   analysis exactly as the uploader would; for now the server checks such a
+   request and starts nothing (`request_analysis`, section 7.7).
 
 The conventions of section 1 hold throughout. Every list below of "Only these
 keys" is a literal allowlist on the server, as in version 1.
@@ -439,6 +467,7 @@ keys" is a literal allowlist on the server, as in version 1.
 | `marks:write` | `propose_marks`, `withdraw_marks`. | `agentAccess` and `agentWrite` |
 | `tasks:write` | `create_review_task`. | `agentAccess` and `agentWrite` |
 | `analysis:run` | `request_analysis`. | `agentAccess` and `agentWrite` |
+| `channels:write` | `set_channels` (section 7.12). | `agentAccess` and `agentWrite` |
 
 - Scopes are chosen when the token is made: `create` on the page (section
   7.8) and `start` of the terminal sign-in (section 7.9) take a `scopes`
@@ -449,7 +478,7 @@ keys" is a literal allowlist on the server, as in version 1.
 - Tokens made before version 1.1 carry `["read"]` and keep it.
 - `whoami` returns the token's own scopes, `token` rows carry them, and
   `exchange` returns them. Order in the list is `read`, `detail`,
-  `marks:write`, `tasks:write`, `analysis:run`.
+  `marks:write`, `tasks:write`, `analysis:run`, `channels:write`.
 - Every action below names the scope it needs. A call without it is 403
   `scope_required`, and the body names the scope:
 
@@ -467,15 +496,21 @@ section 5.1.
 | `agentAccess` (version 1) | Insai staff, `set_access` | Every call. Off: 403 `early_access_required`. |
 | `agentWrite` (1.1) | Insai staff, `set_write_access` | Every write-scope action. Off: 403 `write_access_required`. |
 
-`agentWrite` is off when absent and is never on while `agentAccess` is off:
-switching `agentAccess` off makes every write fail with
-`early_access_required`, which is checked first. Switching `agentWrite` off
-does not delete tokens or their scopes; writes stop until it is on again.
-`detail` reads need only `agentAccess`.
+`agentWrite` is off when absent and is never in effect while `agentAccess` is
+off. Switching `agentAccess` off also switches `agentWrite` off (audited as
+`agent_write_off`), so switching access on again leaves writes off until
+staff switch them on with `set_write_access`. While access is off every call,
+writes included, fails with `early_access_required`, which is checked first.
+Switching `agentWrite` off does not delete tokens or their scopes; writes stop
+until it is on again. `detail` reads need only `agentAccess`.
+
+Wherever a response carries `agentWrite` (`list` in section 7.8, the
+`workspaces` rows of `get` in section 5.2), it is the switch in effect: `true`
+only when `agentAccess` is on too.
 
 ### 7.3 Errors, limits, usage and audit
 
-Two codes are added to section 3.1, and one for analysis:
+Codes added to section 3.1:
 
 | HTTP | `code` | When |
 |---|---|---|
@@ -483,34 +518,59 @@ Two codes are added to section 3.1, and one for analysis:
 | 403 | `write_access_required` | A write-scope action in a workspace whose `agentWrite` is off. |
 | 409 | `already_analysed` | `request_analysis` on a recording that already has machine output. |
 | 409 | `mark_limit` | `propose_marks` would take the token past 5,000 rows on the recording. |
+| 409 | `too_large` | `get_events` on a recording whose events artifact is over 20 MB. |
+| 501 | `not_available` | `request_analysis` passed its checks, but the server cannot start an analysis for a token yet. Nothing was started. |
 
-Order of checks on every call: method and body (400, 405), token (401),
-the token's rate limits (429), membership and the workspace (403
-`forbidden`), `agentAccess` (403 `early_access_required`), scope (403
-`scope_required`), `agentWrite` for a write (403 `write_access_required`),
-then the action's own arguments and refusals. A refused call before the
-action writes nothing.
+Order of checks on every call:
+
+1. Method (405), and a body over 262,144 bytes (400).
+2. A missing or malformed token (401).
+3. A body over 2,048 bytes is checked against the token before it is parsed:
+   an unknown or revoked token is 401 (or 429 past the failed sign-in limit),
+   an expired one 401 `token_expired`. A large body is never parsed for an
+   unverified caller.
+4. The body is a JSON object (400), the action is known (400 `Unknown
+   action.`), and a body over 2,048 bytes belongs to `propose_marks`; any
+   other action is 400 with the message `The body of <action> is at most
+   2048 bytes.`
+5. The token (401), the token's rate limits (429), membership and the
+   workspace (403 `forbidden`), `agentAccess` (403 `early_access_required`),
+   scope (403 `scope_required`), `agentWrite` for a write (403
+   `write_access_required`).
+6. The action's own arguments and refusals.
+
+A call refused before the action writes nothing.
 
 Rate limits added to section 3.1, each per token:
 
 | Actions | Limit |
 |---|---|
 | `list_layers`, `list_nights`, `list_tasks`, `list_members` | 10 a minute each, as `list_recordings` (they read the whole workspace). |
+| `get_events`, `list_marks` | 10 a minute each (they read a whole recording's events or marks). |
 | `propose_marks`, `withdraw_marks`, `create_review_task`, `request_analysis` | 30 a minute, all writes together. |
 | Everything else | Inside the 60 a minute of version 1. |
 
 Every call counts toward the 60 a minute. A write counts once however many
-rows it carries.
+rows it carries. A call refused by a rate limit is not counted.
 
 Usage: every call, writes included, is counted in the token's usage as in
-version 1; writes are also counted on their own so the page can show them.
+version 1. The hour's writes are also counted on their own so the page can
+show them; that count holds only writes that passed their scope and
+`agentWrite`, so a write refused with `scope_required` or
+`write_access_required` is not one.
 
 Audit: every write that changes something leaves exactly one audit row in
 the workspace's audit log, attributed to the token's owner "via agent" with
-the token id, the recording id and counts. Never a mark's text, a label or
+the token id, the recording id (every recording given, for
+`create_review_task`) and counts. Never a mark's text, a label or
 machine output. A write that changes nothing (a withdraw of rows already
 withdrawn, a repeated `opId`) leaves no row. The log is the one Insai staff
 already read; nothing in it reaches the API.
+
+The audit row of `create_review_task` (action `agent_tasks_given`) also
+stores the assignee's account id, as the audit row of a task given on the
+Tasks page does. That row is read by Insai staff only. No response of the
+agent API carries an account id; the assignee is always the `m_…` member id.
 
 ### 7.4 Blinding
 
@@ -533,8 +593,9 @@ Two states of the caller on a recording, as in version 1:
 - `get_quality` is served. Signal quality is not machine output in
   Workbench: the desk shows it on a blind night and the version 1 row
   carries `qualityGrade` held or not.
-- `list_layers` lists a held recording as `{"id": "…", "hidden": "blind"}`
-  with no counts.
+- `list_layers` lists a recording whose machine output is hidden (held or a
+  blind desk) as `{"id": "…", "hidden": "blind"}` with no state and no
+  counts.
 - Held, `list_marks` returns the caller's own human marks only. A blind desk
   without a hold returns every human mark.
 - `propose_marks` and `withdraw_marks` are refused with 403 `forbidden` on a
@@ -575,7 +636,10 @@ shows a held member their own rows shows them an agent's.
 Every `id` is a recording id. A recording the caller may not see, or one
 that is hidden as in version 1, is `not_found`. Cursors follow section 3.2:
 opaque, bound to the token and the same arguments, refused with
-`invalid_argument` when stale.
+`invalid_argument` when stale. A 1.1 cursor is also signed by the server; a
+cursor that was changed, or made for other arguments, is `invalid_argument`
+("`'cursor' is not a cursor of this list.`"). Pass a cursor back exactly as it
+came.
 
 #### `list_members`
 
@@ -615,6 +679,8 @@ Argument: `mine` (boolean, default `true`).
 - `mine: true`: tasks assigned to the caller. `mine: false`: tasks assigned
   to the caller or given by the caller, the two lists the Tasks page shows.
   Nobody sees other people's tasks through the API.
+- `projectId` is `null` when the task's recording is in no project
+  (section 1).
 - `mode` is `blind` or `assisted`. `state` is `open`, `done` or `cancelled`.
   Cancelled and done tasks of the last 30 days are listed; older ones are
   not.
@@ -679,21 +745,24 @@ Argument: `projectId` (optional).
 }
 ```
 
-- One entry per layer that has a status document on at least one listed
-  recording, plus every layer the project ticked. `origin` is `analysis` or
+- The server reads the newest 1,000 recordings the caller would get from
+  `list_recordings` (by `addedAt`) and finds the layers on those. One entry
+  per layer that has a status document on at least one of them, plus every
+  layer the project ticked. `origin` is `analysis` or
   `agent`.
 - `status` of an analysis layer comes from the layer catalog:
   `experimental`, `stable` or `retired`; `unknown` when the catalog does not
   name it. An agent layer is always `proposed`.
-- `recordings` names each recording the caller would get from
-  `list_recordings` (all of them, or the project's). `state` is `have` (rows
-  exist), `notRun` (the layer ran and refused or found nothing to write) or
-  `missing` (no status document). `rows` counts live rows; `counts` is per
-  kind for an agent layer and per class for an analysis layer; each present
-  only when known. A held recording is `{"id", "hidden": "blind"}` and
-  nothing else.
-- At most 1,000 recordings per layer; `truncated` on the layer says more
-  exist. The outer `truncated` is `list_recordings`'s.
+- `recordings` names each of those recordings, newest first. `state` is
+  `have` (rows exist), `notRun` (the layer ran and refused or found nothing
+  to write) or `missing` (no status document). `rows` counts live rows;
+  `counts` is per kind for an agent layer and per class for an analysis
+  layer; each present only when known. A recording whose machine output is
+  hidden from the caller (held or a blind desk, section 7.4) is
+  `{"id", "hidden": "blind"}` and nothing else.
+- At most 1,000 recordings per layer; `truncated` on the layer says the
+  caller has more and only the newest 1,000 were read. The outer `truncated`
+  is `list_recordings`'s.
 - Never a class description, a refusal reason or the detector's parameters.
 
 #### `get_events`
@@ -722,9 +791,11 @@ Arguments: `id` (required), `kind` (optional, one kind name), `cursor`
 - Sorted by `onsetSec`, then `channel`, then `kind`. One event seen on
   several channels is one row per channel; the version 1 `eventCounts`
   counts it once, so totals here are not the same number.
-- `available: false` and no `events` key when the recording has no machine
+- `available: false` and nothing else when the recording has no machine
   events (`hasEvents` absent or `false`).
 - Machine hidden (section 7.4): the whole body is `{"hidden": "blind"}`.
+- 409 `too_large` when the recording's events artifact is over 20 MB: the
+  server does not read it. The person opens the recording in Workbench.
 
 #### `get_stages`
 
@@ -781,7 +852,7 @@ Argument: `id` (required).
   "epochSec": 30,
   "perEpoch": "gggmmbbgg…",
   "channels": [
-    {"index": 1, "grade": "good", "score": 0.9, "shares": {"ok": 0.96, "suspect": 0.03, "flat": 0.01, "railed": 0.0}},
+    {"index": 1, "grade": "good", "score": 0.9, "shares": {"ok": 0.96, "suspect": 0.03, "flat": 0.01}},
     {"index": 2, "grade": "bad", "score": 0.3, "shares": {"ok": 0.4, "suspect": 0.2, "flat": 0.4}, "excluded": "flat"}
   ]
 }
@@ -795,6 +866,10 @@ Argument: `id` (required).
   contact), `railed` (clipped at the amplifier's limit). Each present only
   when the stored result tells it apart; when the result does not tell a
   flat row from a railed one, `flat` carries both and `railed` is absent.
+  The current quality job never tells them apart, so `railed` is not
+  returned today.
+- A channel the quality job graded that is not one of the recording's
+  channels (by label) is left out of `channels`.
   `excluded` names why the channel is left out of the recording grade
   (`flat` or `non_eeg`), present only when it is.
 - `available: false` and nothing else when the recording was never graded.
@@ -838,6 +913,10 @@ Only these keys, each present only when known:
 - Soft-deleted rows (a withdrawn agent row, a mark a person removed) are
   not listed. Notes (`kind: "note"`) are not listed: they are text.
 - Sorted by `t0`, then `id`. `origin` filters to one origin.
+- One call reads at most 5,000 stored rows of the recording, listed or not
+  (notes, removed rows, other origins and withheld rows count). A page may
+  therefore hold fewer than `limit` marks, even none, with a non-null
+  `nextCursor`. Only `nextCursor: null` ends the list.
 - Held: `human` rows are the caller's own only; `machine` and `agent` rows
   are withheld. Blind desk: `human` rows are everyone's; `machine` and
   `agent` rows are withheld. Whenever rows are withheld, the response
@@ -851,11 +930,12 @@ Only these keys, each present only when known:
 |---|---|---|---|---|
 | `propose_marks` | `marks:write` | `id`, `marks` (1 to 500), `opId?` | `source`, `accepted`, `ids`, `total` | `invalid_argument`, `not_found`, `forbidden` (held), `mark_limit` |
 | `withdraw_marks` | `marks:write` | `id`, `markIds?` (1 to 500) | `withdrawn`, `total` | `invalid_argument`, `not_found`, `forbidden` (held) |
-| `create_review_task` | `tasks:write` | `ids` (1 to 100), `memberId`, `mode`, `confirmMachineSeen?` | `batchId`, `given`, `refused` | `invalid_argument`, `not_found` |
-| `request_analysis` | `analysis:run` | `id` | `status` | `invalid_argument`, `not_found`, `forbidden`, `already_analysed` |
+| `create_review_task` | `tasks:write` | `ids` (1 to 100), `memberId`, `mode`, `confirmMachineSeen?` | `batchId`, `given`, `refused`, `mailed` | `invalid_argument`, `not_found` |
+| `request_analysis` | `analysis:run` | `id` | `status` | `invalid_argument`, `not_found`, `forbidden`, `already_analysed`, `not_available` |
 
-All four need `agentAccess` and `agentWrite` (section 7.2). Each writes one
-audit row (section 7.3) and counts against the writes limit.
+All four need `agentAccess` and `agentWrite` (section 7.2). Each counts
+against the writes limit, and each that changes something writes one audit
+row (section 7.3).
 
 #### Agent marks are a review layer
 
@@ -949,7 +1029,8 @@ Arguments: `ids` (list of 1 to 100 recording ids, required, no repeats),
 {
   "batchId": "…",
   "given": ["e_…", "e_…"],
-  "refused": [{"id": "e_…", "code": "open_task"}, {"id": "e_…", "code": "machine_seen"}]
+  "refused": [{"id": "e_…", "code": "open_task"}, {"id": "e_…", "code": "machine_seen"}],
+  "mailed": true
 }
 ```
 
@@ -957,6 +1038,13 @@ This is the page's "give a task", with the same rules. The task is given by
 the token's owner to the member; the owner may give one to themselves. The
 member gets the one email the page sends, naming the workspace and a link to
 their tasks, never the agent.
+
+- `mailed` is `true` when that email was sent by this call. The email is
+  braked per member per workspace: at most one a minute and five an hour.
+  No email is sent for tasks the owner gives themselves, or when nothing was
+  given. A call past the brake still gives the tasks, with `mailed: false`.
+- Audit: one row per call that gave anything, naming every recording given,
+  the count, the mode and the batch.
 
 Per recording, `refused` carries one of these codes and the task is not
 given; the other recordings are:
@@ -985,25 +1073,38 @@ given; the other recordings are:
 Argument: `id` (recording, required).
 
 ```json
-{"status": "started"}
+{"status": "already"}
 ```
 
 The existing "Analyse" of the recording editor, with its rules: the token's
 owner must be the person who uploaded the recording, or Insai staff;
-anyone else is `forbidden`. The server starts the analysis under its own
-service identity on the owner's behalf and never with a person's sign-in.
+anyone else is `forbidden`. The analysis must run under the server's own
+service identity on the owner's behalf, never with a person's sign-in, and
+the analysis service does not accept a service identity yet. So, for now,
+**every call that passes the checks is 501 `not_available` and starts
+nothing.** The person presses Analyse on the recording page instead.
 
-- `started`: a run was started. `already` (HTTP 200): a run is pending from
-  an earlier request; nothing new was started. The call is idempotent: a
-  repeat answers `already`.
-- 409 `already_analysed`: the recording already has machine output. Nothing
-  is started; a re-analysis is not something an agent can ask for.
-- `invalid_argument`: the recording was not uploaded as a file, so it cannot
-  be analysed here.
-- When the analysis service does not answer, 500 `internal`; nothing was
-  started, and the call may be sent again.
+The checks, in this order:
+
+1. The recording exists and the caller may see it: else 404 `not_found`.
+2. 409 `already_analysed`: the recording already has machine output
+   (`machineAvailable` or `hasEvents`). A re-analysis is not something an
+   agent can ask for.
+3. `already` (HTTP 200): a run is already going; nothing new is started.
+4. 400 `invalid_argument`: the recording was not uploaded as a file, so it
+   cannot be analysed here.
+5. 403 `forbidden`: the token's owner did not upload it and is not Insai
+   staff.
+6. 501 `not_available`, with a message saying to use Analyse in Workbench.
+
+Once the analysis service takes a service identity, step 6 becomes the
+start: `{"status": "started"}`, a repeat answers `already`, and when the
+analysis service does not answer the call is 500 `internal`, nothing was
+started, and it may be sent again. Clients handle `started` already.
+
 - Nothing about the analysis comes back: not a job id, not progress. The
   version 1 row's `analysing` shows the run and `machineAvailable` its end.
+- A 501 changes nothing, so it leaves no audit row.
 
 ### 7.8 Token management additions
 
@@ -1013,8 +1114,9 @@ section 4 holds.
 | Action | Change |
 |---|---|
 | `list` | Returns `agentWrite` (boolean) beside `agentAccess`. `canSetAccess` covers both switches. |
-| `create` | Takes `scopes` (optional list of scope names from section 7.1; `["read"]` when absent). The row carries the scopes given. Refused with `invalid_argument` for an unknown scope. A write scope may be put on a token while `agentWrite` is off; the token's writes then fail with `write_access_required` until it is on. |
-| `set_write_access` | `on` (boolean). `{"agentWrite": bool}`. Insai staff only; anyone else gets `forbidden`. Refused with `early_access_required` when `agentAccess` is off. Audited as `agent_access_on` and `agent_access_off` are. |
+| `create` | Takes `scopes` (optional list of scope names from section 7.1; `["read"]` when absent). The row carries the scopes given. Refused with `invalid_argument` for an unknown scope. Write scopes are allowed while `agentWrite` is off: the page may put one on a token then, and the token's writes fail with `write_access_required` until the switch is on. Refused with `invalid_argument` ("A name may not hold an email address or an id.") when `name` holds an email address, an account id or a recording id: members read the name as the author of the token's marks. |
+| `set_access` | `on: false` also switches `agentWrite` off (audited `agent_write_off`); `on: true` leaves `agentWrite` off (section 7.2). |
+| `set_write_access` | `on` (boolean). `{"agentWrite": bool}`. Insai staff only; anyone else gets `forbidden`. Only `on: true` is refused with `early_access_required` while `agentAccess` is off; `on: false` always succeeds. Audited as `agent_write_on` and `agent_write_off`. |
 
 The page shows a token's scopes on its row and lets the person pick them at
 creation. Scopes are not edited; a new token is made.
@@ -1030,14 +1132,23 @@ follows. Everything else in section 5 holds.
 - `get` returns `scopes`: the scopes the terminal asked for while pending,
   and the scopes approved once approved. The approval page shows them to the
   person as a list of what the token will be able to do, before the code.
+  Each `workspaces` row carries `agentWrite` (in effect), so the page offers
+  write scopes only where writes are on.
 - `approve` takes `scopes` (optional). When given, it must be a subset of
   the session's requested scopes that still holds `read`; it narrows the
   token to that list. A scope not asked for is `invalid_argument`: the page
   never widens what the terminal asked for. When absent, the token gets the
   requested scopes.
 - `exchange` returns `scopes` as minted.
-- A write scope may be approved for a workspace whose `agentWrite` is off,
-  with the same effect as on the page (section 7.8).
+- `approve` is refused with 403 `write_access_required` when the scopes it
+  would approve (the narrowed list, or the requested one) hold a write scope
+  and the workspace's `agentWrite` is off. Nothing changes; the session stays
+  pending, and the person may approve again with fewer scopes. This differs
+  from `create` on the page (section 7.8), which allows write scopes while
+  writes are off.
+- The token is named after the device as in section 5.1; a device name that
+  holds an email address or an id gives the token the name
+  `nexus-workbench`.
 
 ### 7.10 Using scopes (client)
 
@@ -1058,9 +1169,12 @@ nexus-workbench login --scope detail --scope marks:write
   with `scope_required` before any call when the client knows the token's
   scopes, and with the server's `scope_required` otherwise. The message
   names the scope and the `login` command to run.
-- The MCP server exposes one tool per action, named as the action. A tool
-  the token's scopes do not cover is still listed, so the agent can tell the
-  person which scope to add.
+- The MCP server exposes one tool per action, named as the action. The read
+  tools and the local tools are always listed. A detail or write tool is
+  listed only when the saved token's scopes cover it (read from the
+  credentials file at start, with no call). A token given by `NEXUS_TOKEN`
+  has no saved scopes, so only the read and local tools are listed. After
+  `login --scope`, the person restarts the agent session.
 
 Codes added to section 3.3 (the server sends them; the client passes them
 through unchanged):
@@ -1071,6 +1185,35 @@ through unchanged):
 | `write_access_required` | The workspace does not take agent writes yet (section 7.2). The client's message says to ask Insai. |
 | `already_analysed` | `request_analysis` on a recording with machine output. |
 | `mark_limit` | `propose_marks` past 5,000 rows per token on the recording. |
+| `too_large` | `get_events` on a recording whose events are over 20 MB. The client's message says to open it in Workbench. |
+| `not_available` | `request_analysis` (HTTP 501). The client says: "Starting an analysis from an agent is not available yet. Use Analyse on the recording page." |
+
+A client treats 400 `invalid_argument` with the message `Unknown action.`, on
+an action of this section, as "this server is too old" and says the action is
+not offered by this server yet.
+
+### 7.11 Requesting agent access
+
+The Workbench page lets a member ask Insai to switch on agent access for a
+workspace. These are page-only actions of `workbench_agent_token` (section 4),
+called as the signed-in person; no client calls them. They are documented here
+for completeness. Everything else in section 4 holds.
+
+| Action | Arguments | Returns |
+|---|---|---|
+| `request_access` | `wid`, `note` (optional) | `{"request": {"status": "pending", "requestedAt": "…", "note": "…"}}`, or `{"request": null, "agentAccess": true}` when access is already on. |
+| `cancel_request` | `wid` | Withdraws the caller's own pending request. |
+| `decline_request` | `wid` | Insai staff only; anyone else gets `forbidden`. Declines a pending request. |
+| `set_access` | `on` (boolean) | As in section 4. `on: true` also approves every pending request for the workspace and emails each person who asked. |
+| `list` | none | As in sections 4 and 7.8, plus the caller's own `request` (`null` when there is none). Insai staff also see the workspace's pending `requests`. |
+
+The terminal sign-in `get` (section 5.2) adds `requested` (boolean) to each
+`workspaces` row: whether the person has a pending request for that
+workspace. The approval page uses it to offer the request where access is off.
+
+When a call is refused with `early_access_required`, the client says:
+"Agent access is not on for this workspace yet. Request it in Workbench:
+account menu, Connect an agent, Request agent access."
 
 ### 7.12 Channel sites (staging)
 
@@ -1108,13 +1251,18 @@ Refusals (`{"error": {"code", "message"}}`):
 | 503 | `unavailable` (the file header could not be read) |
 | 501 | `not_available` |
 
-The client passes these codes through unchanged, as it does `scope_required`
-and `write_access_required`. `nexus-workbench channels show | set | clear`
+The client keeps each code unchanged. `scope_required`, `write_access_required`
+and `not_available` are the typed errors of section 7.10 (`scope_required`
+names the `login` command with `--scope channels:write`); the other codes
+above, `unavailable` and `ambiguous_label` are one refusal error that keeps the
+server's `code`, its message and the body's other top-level keys (`current`,
+`candidates`). `set_channels` is not a section 7 action for the "too old"
+rule: a server without channel sites says `not_available` itself. `nexus-workbench channels show | set | clear`
 wraps the two actions: `set` reads the version first unless
 `--expected-version` is given, keeps the ports it is not given, and exits 3
 on a refusal and 4 on sign-in, scope or access.
 
-### 7.11 Still later
+### 7.13 Still later
 
 Signal download; a `personKey` on recording rows; reading another person's
 scoring; editing or re-labelling an existing mark; re-analysis; a staff

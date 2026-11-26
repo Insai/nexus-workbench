@@ -1,0 +1,46 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.Insai/nexus-workbench",
+  "title": "Insai Workbench",
+  "description": "Sleep-EEG tools: EDF quality, band power and scorer agreement, plus Workbench reads.",
+  "version": "0.2.1",
+  "websiteUrl": "https://insai.tech/workbench",
+  "repository": {
+    "url": "https://github.com/Insai/nexus-workbench",
+    "source": "github"
+  },
+  "packages": [
+    {
+      "registryType": "pypi",
+      "registryBaseUrl": "https://pypi.org",
+      "identifier": "nexus-workbench",
+      "version": "0.2.1",
+      "runtimeHint": "uvx",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [
+        {
+          "type": "positional",
+          "value": "mcp"
+        }
+      ],
+      "environmentVariables": [
+        {
+          "name": "NEXUS_WORKBENCH_CONFIG_DIR",
+          "description": "Folder of the credentials file that `nexus-workbench login` writes, if not the user config folder.",
+          "isRequired": false,
+          "isSecret": false,
+          "format": "string"
+        },
+        {
+          "name": "NEXUS_WORKBENCH_NO_UPDATE_CHECK",
+          "description": "Set to 1 to turn off the daily check for a newer version on PyPI.",
+          "isRequired": false,
+          "isSecret": false,
+          "format": "string"
+        }
+      ]
+    }
+  ]
+}

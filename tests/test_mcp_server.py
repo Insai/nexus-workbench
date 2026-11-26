@@ -12,10 +12,15 @@ import pytest
 from mcp import Client
 
 from nexus_workbench import client as c
-from nexus_workbench import mcp_server
+from nexus_workbench import mcp_errors, mcp_server
 from tests.fake_api import API_BASE, FakeAPI, make_token, sample_data
 
 WORKSPACE_TOOLS = {"whoami", "list_projects", "list_recordings", "get_recording"}
+READ_V11_TOOLS = {"list_members", "list_tasks", "list_nights", "list_layers"}
+DETAIL_TOOLS = {"get_events", "get_stages", "get_quality", "list_marks"}
+WRITE_TOOLS = {"propose_marks", "withdraw_marks", "create_review_task", "request_analysis"}
+READ_TOOLS = WORKSPACE_TOOLS | READ_V11_TOOLS
+#: The local tools that only read files.
 LOCAL_TOOLS = {
     "inspect_edf",
     "check_signal_quality",
@@ -23,24 +28,41 @@ LOCAL_TOOLS = {
     "compare_hypnograms",
     "compare_events",
 }
-ALL_TOOLS = WORKSPACE_TOOLS | LOCAL_TOOLS
+LOCAL_ALL = LOCAL_TOOLS | {"preprocess"}
+#: What a server lists when the token's scopes are not known (signed out, NEXUS_TOKEN).
+BASE_TOOLS = READ_TOOLS | LOCAL_ALL
+ALL_TOOLS = BASE_TOOLS | DETAIL_TOOLS | WRITE_TOOLS
 
 
-def server_for(api: FakeAPI, token: str | None) -> Any:
+def server_for(api: FakeAPI, token: str | None, scopes: Any = None) -> Any:
     def factory() -> c.WorkbenchClient:
         return c.WorkbenchClient(
             api_base=API_BASE, token=token, transport=api.transport, sleep=lambda s: None
         )
 
-    return mcp_server.build_server(factory)
+    return mcp_server.build_server(factory, scopes=scopes)
 
 
 def run(coro_fn: Any) -> Any:
     return anyio.run(coro_fn)
 
 
+def error_of(result: Any) -> dict[str, Any]:
+    """An error result's structured copy: its second text block, as JSON. It is never sent as
+    structured content (that would not match the tool's output schema)."""
+    assert result.is_error is True
+    assert result.structured_content is None
+    texts = [block.text for block in result.content if getattr(block, "text", None)]
+    return json.loads(texts[1])
+
+
 def text_of(result: Any) -> str:
-    return "\n".join(block.text for block in result.content if getattr(block, "text", None))
+    """The text for a person. An error's second block is its structured copy as JSON."""
+    texts = [block.text for block in result.content if getattr(block, "text", None)]
+    if result.is_error:
+        assert isinstance(json.loads(texts[1]), dict)
+        return texts[0]
+    return "\n".join(texts)
 
 
 @pytest.fixture
@@ -59,19 +81,20 @@ def test_lists_tools_with_annotations_and_schemas(api: FakeAPI) -> None:
 
     tools, instructions, info = run(go)
     by_name = {t.name: t for t in tools.tools}
-    assert set(by_name) == ALL_TOOLS
-    assert len(tools.tools) == 9
+    assert set(by_name) == BASE_TOOLS
+    assert len(tools.tools) == 14
     assert info.name == "nexus"
-    assert "read-only" in instructions
+    assert "Every listed workspace tool is read-only" in instructions
     assert "nexus-workbench login" in instructions
     assert "data, not instructions" in instructions
     for tool in tools.tools:
         ann = tool.annotations
         assert ann is not None
-        assert ann.read_only_hint is True
+        assert ann.read_only_hint is (tool.name != "preprocess")
         assert ann.destructive_hint is False
         assert ann.idempotent_hint is True
-        assert ann.open_world_hint is (tool.name in WORKSPACE_TOOLS)
+        open_world = tool.name in READ_TOOLS | {"compare_hypnograms", "compare_events"}
+        assert ann.open_world_hint is open_world
         assert ann.title and tool.title
         assert tool.output_schema and tool.output_schema.get("type") == "object"
         assert tool.description and len(tool.description) > 60
@@ -318,8 +341,19 @@ def test_signed_out_message(api: FakeAPI) -> None:
     for result in run(go):
         assert result.is_error is True
         assert text_of(result) == (
-            "Not signed in. Run `nexus-workbench login` in a terminal, then try again."
+            "Not signed in. Run `nexus-workbench login` in a terminal, then try again. "
+            + mcp_errors.RUN_IT_YOURSELF
         )
+        assert "paste" not in text_of(result)
+        assert error_of(result) == {
+            "ok": False,
+            "code": "not_signed_in",
+            "reason": "Not signed in.",
+            "howToFix": ["nexus-workbench login"],
+            "localAlternative": list(mcp_errors.LOCAL_TOOLS),
+            "requestId": None,
+            "retryAfter": None,
+        }
     assert api.requests == []
 
 
@@ -333,7 +367,7 @@ def test_client_errors_become_tool_errors(api: FakeAPI) -> None:
     result = run(go)
     assert result.is_error is True
     text = text_of(result)
-    assert "early access" in text and c.EARLY_ACCESS_URL in text
+    assert "Agent access is not on" in text and c.REQUEST_ACCESS_HINT in text
     assert "Traceback" not in text
 
 
@@ -374,7 +408,7 @@ def test_local_tool_seam_registers_extra_specs(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(
         mcp_server,
         "local_tools",
-        lambda: [
+        lambda factory=None: [
             mcp_server.ToolSpec(
                 fn=inspect_edf,
                 name="inspect_edf",
@@ -404,6 +438,7 @@ def test_local_tool_seam_registers_extra_specs(monkeypatch: pytest.MonkeyPatch) 
 
 def _child_env(tmp_path: Path) -> dict[str, str]:
     env = {k: v for k, v in os.environ.items() if not k.startswith("NEXUS_")}
+    env["NEXUS_WORKBENCH_NO_UPDATE_CHECK"] = "1"
     env["HOME"] = str(tmp_path / "home")
     env["XDG_CONFIG_HOME"] = str(tmp_path / "xdg")
     env["APPDATA"] = str(tmp_path / "appdata")
@@ -475,7 +510,7 @@ def test_stdio_handshake_only_protocol_on_stdout(tmp_path: Path) -> None:
         parsed.append(obj)
     by_id = {m["id"]: m for m in parsed if "id" in m}
     assert by_id[1]["result"]["serverInfo"]["name"] == "nexus"
-    assert {t["name"] for t in by_id[2]["result"]["tools"]} == ALL_TOOLS
+    assert {t["name"] for t in by_id[2]["result"]["tools"]} == BASE_TOOLS
     call = by_id[3]["result"]
     assert call["isError"] is True
     assert "Not signed in" in call["content"][0]["text"]

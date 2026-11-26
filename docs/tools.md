@@ -1,8 +1,16 @@
+# Tools
+
+This file describes every tool of the `nexus` MCP server: first the six local tools,
+then the workspace tools (from [Workspace tools](#workspace-tools)). The Workbench API
+behind the workspace tools is specified in [contract.md](contract.md).
+
 # Local tools
 
-Five tools that run on files on your own machine. They need no account and no network.
-A coding agent calls them through the MCP server; from Python they are in
-`nexus_workbench.local.api`.
+Six tools that run on files on your own machine. They need no account and no network,
+except when a comparison takes one side from the workspace (see
+[Workspace sides](#workspace-sides-for-the-comparisons)). Five only read; `preprocess`
+writes one new file. A coding agent calls them through the MCP server; from Python they
+are in `nexus_workbench.local.api`.
 
 From Python, with the sample night written by `nexus-workbench sample`:
 
@@ -29,7 +37,7 @@ numbers, `true`, `false` and `null`. A number that cannot be computed is `null`,
 Every expected failure (missing file, not an EDF, mismatched lengths, unreadable hypnogram)
 raises `LocalToolError` with a message that says what happened and what to do.
 
-Rules shared by all five:
+Rules shared by all six:
 
 - The EDF header's identity fields (the patient field with name, id and birth date, the
   recording field with its free text, and the start date and time) are never parsed, kept or
@@ -44,6 +52,9 @@ Rules shared by all five:
   range gives a short plain error that names the argument, says what it must be and shows
   what was sent, for example `limit must be an integer from 1 to 100 (got 500).` or
   `id is required.`
+- Every MCP tool error also carries a JSON block (its second text block) with a stable `code`
+  (`invalid_argument`, `local_file`, `local_unexpected`, or a workspace code), `howToFix`,
+  `localAlternative`, `requestId` and `retryAfter`. See docs/contract.md section 3.3.
 - From the command line (`nexus-workbench qc`), errors carry a code in brackets:
   `local_file` when a tool refuses the file, `local_unexpected` for anything else. With
   `--json` the error goes to stderr as `{"error": {"code": "...", "message": "..."}}`. Set
@@ -58,6 +69,8 @@ Rules shared by all five:
 - No tool returns raw samples or per-epoch arrays. Lists that can grow have a cap, and the
   output says when a cap was hit (`"truncated": true`).
 - Same input, same output.
+- Only `preprocess` writes anything: one new EDF file, never over its input or any file
+  that exists.
 - Only regular files are read. Folders, devices, pipes and symbolic link loops are refused.
   An EDF must have a valid header whatever its extension. Text inputs are limited to 10 MB.
 
@@ -436,6 +449,120 @@ ran, `reduced` is `true` and `nShuffles` says how many ran (it can be 0, with `n
 when even one shuffle would pass the bound). An event that starts at or after
 `recording_hours` is an error.
 
+## Workspace sides for the comparisons
+
+`compare_hypnograms` and `compare_events` can take one side from a Workbench recording
+instead of a file: leave out that side's path and pass `recording_id`. Exactly one path
+must be given then; the workspace fills the other. This needs sign-in with the `detail`
+scope, and it reads Workbench (so these two tools are marked open-world).
+
+- `compare_hypnograms(path_a=..., recording_id=..., source="machine")`: the side you
+  leave out is `get_stages` for that recording. `source` is `machine` (the machine
+  staging) or `mine` (your own scoring); default `machine`. `epoch_sec` must equal the
+  recording's `epochSec`, or the call is refused with the value to pass. The workspace
+  side is named `workspace:<recording id>:<source>` in `fileIdA` or `fileIdB`.
+- `compare_events(reference_path=..., recording_id=..., label="spindle")`: the side you
+  leave out is the recording's machine events, read page by page with `get_events` (at
+  most 10,000 rows, the 10 pages a minute `get_events` allows). `label` also picks the kind read. An event the workspace lists on
+  several channels is kept once, as `eventCounts` counts it. The workspace side is named
+  `workspace:<recording id>:machine`.
+- When blinding withholds the machine output, or there is none, the tool answers with
+  that and compares nothing. Your own scoring is never withheld.
+
+Example: compare your scoring file with the machine staging of recording `e_123`:
+
+```json
+{"path_a": "my_scoring.csv", "recording_id": "e_123", "source": "machine"}
+```
+
+From the command line, `nexus-workbench stages ID --save FILE` and
+`nexus-workbench events ID --save FILE` write the same data as files these tools read.
+
+## preprocess
+
+Writes a new EDF+C file from a local EDF, filtered as asked, and describes what was done.
+The input is never changed, and a file that exists is never replaced.
+
+Arguments:
+
+- `path` (text): the EDF file.
+- `low_hz` (number, optional, more than 0): the high-pass edge. With `high_hz` it is a
+  band-pass; alone, a high-pass.
+- `high_hz` (number, optional, more than 0): the low-pass edge. Alone, a low-pass.
+- `notch_hz` (50 or 60, optional): a mains notch with Q 30.
+- `resample_hz` (whole number, 1 to 4096, optional): the new sample rate of the filtered
+  channels.
+- `channels` (list, optional): labels as `inspect_edf` shows them, `ch<N>`, or 1-based
+  positions. Default: every data channel.
+- `out` (text, optional): the new file, or a folder for it. Default:
+  `<name>_preprocessed.edf` next to the input. It must end in `.edf` and must not exist.
+
+Output (two of four channels shown):
+
+```json
+{
+  "recordingId": "073029f5ebdd",
+  "output": "sample_night_preprocessed.edf",
+  "outputId": "8d71ad3633a5",
+  "format": "EDF+C",
+  "durationSec": 1800.0,
+  "applied": ["bandpass", "resample"],
+  "filters": {
+    "lowHz": 0.3, "highHz": 20.0,
+    "method": "Butterworth, order 4, run forward and backward (zero phase)",
+    "notchHz": null, "notchQ": null, "resampleHz": 50.0
+  },
+  "channels": [
+    {"index": 1, "label": "C3-M2", "type": "eeg", "sampleRateHz": 100.0, "outputSampleRateHz": 50.0, "filtered": true, "clippedSamples": 0},
+    {"index": 3, "label": "E1-M2", "type": "eog", "sampleRateHz": 100.0, "outputSampleRateHz": 50.0, "filtered": true, "clippedSamples": 0}
+  ],
+  "channelsWritten": 4,
+  "channelsLeftOut": 0,
+  "annotationsCopied": false,
+  "notes": []
+}
+```
+
+- `output` is the new file's base name, never its folder; `outputId` its content id.
+- `applied` lists `bandpass`, `highpass`, `lowpass`, `notch`, `resample` and `channels`, in
+  that order, for what was done.
+- `filtered` is `false` for a channel that is not a voltage (oximetry, position): such
+  channels are copied unchanged, at their own rate.
+- Filtering can carry a signal past the input's physical range (a filter rings at a sharp
+  step, a high-pass recentres a drift). Such a channel is written with a wider physical
+  range, fitted to the filtered data with a 2 % margin, and the full 16-bit digital range,
+  so nothing is cut. A channel that still fits keeps the input's range.
+- `clippedSamples` counts samples the new file could not hold and were cut to its range.
+  Because the range widens to fit, it is 0 unless a value cannot be stored in EDF at all.
+- `channelsLeftOut` counts the input's data channels not chosen.
+- `notes` lists filters skipped on a channel because they sit at or above half its sample
+  rate, where the channel holds nothing to remove. A 100 Hz channel has nothing at 50 Hz, so
+  `--notch 50` on it reads `notch 50 Hz skipped on C3-M2: at or above half its 100 Hz
+  sample rate`. A `high_hz` there is skipped the same way, leaving any `low_hz` as a
+  high-pass. A 256 Hz channel in the same file still gets the notch.
+
+Method. Band-pass, high-pass and low-pass are 4th-order Butterworth filters in
+second-order sections, run forward and backward (`scipy.signal.sosfiltfilt`), so there is
+no phase shift. The notch is `scipy.signal.iirnotch` at Q 30, also run forward and
+backward. Resampling uses `scipy.signal.resample_poly`, which filters against aliasing.
+Filtering runs on physical values; the new file keeps each channel's physical and digital
+range, label and unit. Its patient and recording fields hold the EDF+ "unknown"
+placeholders and its start date and time are 01.01.85 00.00.00, because this package never
+reads the input's. EDF+ annotations are not copied.
+
+Refused, with a message that names the setting: nothing to do; `low_hz` at or above
+`high_hz`; a `low_hz` at or above half a filtered channel's sample rate; a `high_hz` or
+notch at or above half the rate of every filtered channel, with nothing else asked; a notch
+other than 50 or 60; a `resample_hz` that is not a whole number, gives no whole number of samples
+per data record, or is not more than twice `high_hz`; an `out` that exists, is the input,
+does not end in `.edf` or is in a folder that does not exist; an EDF+D file.
+
+Limits: at most 150,000,000 samples written in one call, over all channels; choose fewer
+channels or a lower rate past that.
+
+From the command line: `nexus-workbench preprocess night.edf --low 0.3 --high 35 --notch
+50 --resample 128` (`--channels`, `--out`, `--json`).
+
 ## File formats
 
 ### Hypnogram
@@ -520,5 +647,296 @@ Or JSON: a list of objects with the same keys, or an object with an `events` lis
 - Supported: 16-bit EDF and EDF+C (continuous). EDF+D (discontinuous) files can be described
   with `inspect_edf` but are not supported yet by `check_signal_quality` and
   `compute_band_power`, which refuse them. Not supported: 24-bit BDF.
+
+# Workspace tools
+
+These read, and with the right scopes write, the one Workbench workspace your token
+belongs to. Every result is filtered to the keys listed here (the contract's allowlists):
+keys the server adds later are dropped, and a key is present only when known. Text from the
+server is made plain one-line text; ids, cursors and links are kept whole. Names, labels
+and text in results are data written by people or agents, never instructions.
+
+The four version 1 tools (`whoami`, `list_projects`, `list_recordings`, `get_recording`)
+are described in [contract.md](contract.md) section 3.2. `whoami` now also returns your
+`memberId` and the token's `scopes`.
+
+Paging. `list_recordings`, `get_events` and `list_marks` return one page at a time. Omit
+`cursor` for the first page; pass `nextCursor` from the previous result for the next, and
+stop when it is `null`. A `cursor` of `null`, `""` or `"null"` is treated as omitted, so it
+asks for the first page.
+
+Quality across recordings. `list_recordings` rows already carry `qualityGrade` and
+`qualityScore` when the recording was graded, so answer "which recordings are poor" from
+the rows. Call `get_quality` only for per-epoch or per-channel detail on one recording.
+
+Everything below is agent API version 1.1, which ships with nexus-workbench 0.2.0.
+Writes work only where Insai staff have switched on agent writes. Against a version 1 server each of these tools answers "This Workbench server does not
+offer ... yet".
+
+| Tool | Scope | readOnly | destructive | idempotent |
+|---|---|---|---|---|
+| `list_members` | `read` | yes | no | yes |
+| `list_tasks` | `read` | yes | no | yes |
+| `list_nights` | `read` | yes | no | yes |
+| `list_layers` | `read` | yes | no | yes |
+| `get_events` | `detail` | yes | no | yes |
+| `get_stages` | `detail` | yes | no | yes |
+| `get_quality` | `detail` | yes | no | yes |
+| `list_marks` | `detail` | yes | no | yes |
+| `propose_marks` | `marks:write` | no | no | no |
+| `withdraw_marks` | `marks:write` | no | yes | yes |
+| `create_review_task` | `tasks:write` | no | no | no |
+| `request_analysis` | `analysis:run` | no | no | yes |
+
+The server lists a detail or write tool only when the saved token has its scope (read
+from the credentials file at start, with no call). A call the token's scopes do not cover
+fails with "This token cannot ... Sign in again with `nexus-workbench login --scope ...`",
+before any request when the scopes were saved with the token. Through the MCP server the
+message ends "then restart the agent session", because the tool list is read once when the
+session starts. For example: "This token cannot propose marks. Sign in again with
+`nexus-workbench login --scope marks:write` (add `--scope detail` to keep what this token
+has), then restart the agent session." A token from `NEXUS_TOKEN`
+has no saved scopes, so with it only the read and local tools are listed. Writes also need
+the workspace's agent writes switch; without it they answer "This workspace does not take
+agent writes yet."
+
+Blinding. On a recording where you are held blind, or where your own desk hides the
+machine, machine output is withheld and the result reads `{"hidden": "blind"}` where it
+would be. Your own scoring and the signal quality are never withheld.
+
+Ids are opaque: `m_` member ids, `n_` night ids (the `pairId` of a recording row), `pk_`
+person keys, `task_` task ids, mark ids, and `source` names of layers
+(`analysis:<name>-<version>` or `agent:<token id>`).
+
+## list_members
+
+The workspace's active people. No arguments.
+
+```json
+{"members": [{"id": "m_00000000000000a1", "role": "member", "you": true}, {"id": "m_00000000000000b2", "role": "owner"}]}
+```
+
+- Sorted by `id`. `role` is `owner` or `member`. `you` is on your own row only.
+- No name, initials, email, colour or join date. The analysis service is not listed.
+- Capped at 1,000 rows. 10 calls a minute.
+
+## list_tasks
+
+Arguments: `mine` (true or false, default true). True: tasks given to you. False: also the
+tasks you gave.
+
+```json
+{"tasks": [{"id": "task_00000000000000a1", "recordingId": "e_0", "projectId": "p_1", "assignee": "m_00000000000000a1", "givenBy": "m_00000000000000b2", "mode": "blind", "state": "open", "givenAt": "2026-11-21T10:00:00Z", "doneAt": null}]}
+```
+
+- `mode` is `blind` or `assisted`; `state` `open`, `done` or `cancelled` (done and
+  cancelled of the last 30 days only). Newest first, at most 500 rows.
+- Never agreement numbers, labels, notes or batch ids. 10 calls a minute.
+
+## list_nights
+
+Arguments: `project_id` (optional).
+
+```json
+{"nights": [{"id": "n_1", "recordingIds": ["e_0", "e_1"], "projectId": "p_1", "personKey": "pk_0123456789abcdef"}, {"id": "n_2", "recordingIds": ["e_2", "e_3"]}], "truncated": false}
+```
+
+- A night is two or more recordings with one `pairId`. `projectId` when all share one
+  project. `personKey` when the recordings name one participant and agree on it: an
+  opaque key, the same for that person across nights of this workspace, never the
+  participant code.
+- No night name, note, reference recording or date. Capped at 2,000 nights (then
+  `truncated` is true). 10 calls a minute.
+
+## list_layers
+
+Arguments: `project_id` (optional).
+
+```json
+{
+  "layers": [
+    {
+      "source": "analysis:ladder-3", "name": "ladder", "version": "3", "origin": "analysis", "status": "stable",
+      "recordings": [
+        {"id": "e_0", "state": "notRun"},
+        {"id": "e_1", "state": "have", "rows": 1, "counts": {"spindle": 1}},
+        {"id": "e_2", "hidden": "blind"}
+      ],
+      "truncated": false
+    }
+  ],
+  "truncated": false
+}
+```
+
+- `origin` is `analysis` or `agent`. An analysis layer's `status` is `experimental`,
+  `stable`, `retired` or `unknown`; an agent layer's is `proposed`.
+- Per recording, `state` is `have` (rows exist), `notRun` (ran and wrote nothing) or
+  `missing`; `rows` counts live rows and `counts` is per kind or class. A recording whose
+  machine output is hidden from you (held blind, or a blind desk) carries only `hidden`.
+- Layers are found on the newest 1,000 recordings, and each layer lists those (its
+  `truncated` says more exist). At most 200 layers. 10 calls a minute.
+
+## get_events
+
+Arguments: `id` (recording, required), `kind` (optional), `cursor` (optional), `limit`
+(1 to 1000, default 500).
+
+```json
+{"available": true, "kinds": ["arousal", "spindle"], "events": [{"onsetSec": 300.0, "durationSec": 1.0, "kind": "spindle", "channel": 1, "confidence": 0.8}, {"onsetSec": 300.0, "durationSec": 1.0, "kind": "spindle", "channel": 2}], "nextCursor": "…"}
+```
+
+- `kinds` is the set of event kinds this recording's analysis detects. A kind not listed
+  (for example `arousal` on a recording whose analysis has no arousal detector) has no
+  machine detector there, so no rows says nothing about the signal. A listed kind with a
+  zero count, or no rows on a first page without `nextCursor`, means none were found.
+- `onsetSec` and `durationSec` are seconds from the recording start; `channel` is the
+  1-based position in `get_recording`'s `channels.labels`; `confidence` only when given.
+- One event on several channels is one row per channel, so totals differ from
+  `eventCounts`. Sorted by onset, then channel, then kind.
+- `available: false` (no `events`) when there are no machine events. Blinded:
+  `{"hidden": "blind"}`. Omit `cursor` for the first page; pass `nextCursor` from the
+  previous result for the next. A cursor is signed by the server: pass it back as it came,
+  or it is refused.
+- A recording whose events are over 20 MB is refused with `too_large` ("open it in
+  Workbench"). 10 calls a minute.
+
+## get_stages
+
+Arguments: `id` (recording, required), `source` (`machine` or `mine`, default `machine`).
+
+```json
+{"source": "machine", "available": true, "model": "usleep", "epochSec": 30, "nEpochs": 30, "stages": "WWWWN1N1N2N2N2N2N2N2N2N2N2N2N3N3N3N3N3N3RRRRWW??"}
+```
+
+```json
+{"source": "mine", "available": true, "status": "in_progress", "epochSec": 30, "nEpochs": 30, "stages": "WWWWN2N2N2N2N2N2N2N2N2N2N2N2N3N3N3N3N3N3RRRRWW??", "questionable": [5], "noSignal": [29]}
+```
+
+- `stages` holds one code per epoch, `W`, `N1`, `N2`, `N3`, `R` or `?` (not scored), with
+  no separator. Split it with the pattern `W|N[123]|R|\?`; there are `nEpochs` codes.
+- `machine`: the primary machine staging and its `model`. Blinded:
+  `{"source": "machine", "hidden": "blind"}`.
+- `mine`: your own scoring, its `status` (`in_progress` or `done`) and the 0-based epochs
+  you flagged. Never withheld. Another person's scoring is not available.
+- `available: false` when there is none.
+
+## get_quality
+
+Arguments: `id` (recording, required).
+
+```json
+{"available": true, "grade": "marginal", "score": 0.71, "epochSec": 30, "perEpoch": "ggggggggggggggggggggmmmmmmbb??", "channels": [{"index": 1, "grade": "good", "score": 0.9, "shares": {"ok": 0.96, "suspect": 0.03, "flat": 0.01}}, {"index": 2, "grade": "bad", "score": 0.3, "shares": {"ok": 0.4, "suspect": 0.2, "flat": 0.4}, "excluded": "flat"}]}
+```
+
+- `perEpoch` holds one letter an epoch: `g` good, `m` marginal, `b` bad, `?` not graded.
+- `shares` are fractions of epochs. The current quality job does not tell flat from
+  railed, so `flat` carries both and `railed` is not sent. `excluded` (`flat` or
+  `non_eeg`) says why a channel is left out of the grade. A channel the quality job graded
+  that is not one of the recording's channels is left out.
+- Not blinded. `available: false` when never graded.
+
+## list_marks
+
+Arguments: `id` (recording, required), `origin` (`human`, `machine` or `agent`, optional),
+`cursor` (optional), `limit` (1 to 500, default 200).
+
+```json
+{"marks": [{"id": "h1", "origin": "human", "kind": "arousal", "target": "channel", "t0": 100.0, "t1": 104.0, "channels": [1], "author": "m_00000000000000a1", "createdAt": "2026-11-20T09:15:00Z"}, {"id": "analysis-ladder-3-00017", "origin": "machine", "source": "analysis:ladder-3", "kind": "spindle", "target": "channel", "t0": 300.0, "t1": 301.0, "channels": [1], "label": "sigma burst", "confidence": 0.81, "verdicts": {"agree": 2, "disagree": 0}}], "nextCursor": null}
+```
+
+- Keys per origin: a `human` row has `author` and never `label` or `text`; `machine` and
+  `agent` rows have `source`, `label`, `confidence` and `verdicts` (members' agree and
+  disagree counts) and never `author`; only `agent` rows have `text`. The client drops any
+  other key.
+- `target` is `epoch` (a span of the whole recording, `channels` empty) or `channel`.
+- Notes and removed or withdrawn marks are not listed. Sorted by `t0`, then `id`.
+- Held blind: your own human rows only, and `"hidden": "blind"`. A blind desk: everyone's
+  human rows and `"hidden": "blind"`. Asking for a withheld origin gives
+  `{"marks": [], "nextCursor": null, "hidden": "blind"}`.
+- A page may hold fewer than `limit` marks and still carry a `nextCursor`: the server reads
+  at most 5,000 stored rows a call. Page until `nextCursor` is `null`. 10 calls a minute.
+
+## propose_marks
+
+Arguments: `id` (recording, required), `marks` (1 to 500, required), `op_id` (optional,
+1 to 64 characters from `0-9A-Za-z_-`).
+
+One mark: `kind` (one of `bad_signal`, `movement`, `electrode_pop`, `flatline`, `arousal`,
+`spindle`, `k_complex`, `slow_wave`, `sawtooth`, `eye_movement`), `t0` and `t1` (seconds,
+`0 <= t0 <= t1 <= durationSec`), and optionally `channels` (1-based positions, at most 16,
+no repeats; none means the whole epoch span), `label` (1 to 40 characters), `confidence`
+(0 to 1) and `text` (1 to 200 characters).
+
+```json
+{"id": "e_123", "marks": [{"kind": "arousal", "t0": 2100.0, "t1": 2104.0, "channels": [2], "label": "EMG rise", "text": "EMG rise with alpha intrusion, 4 s", "confidence": 0.6}]}
+```
+
+```json
+{"source": "agent:tok_e5a1ff167cc34e8f", "accepted": 1, "ids": ["agent-tok_e5a1ff167cc34e8f-1"], "total": 1}
+```
+
+- The marks become rows of this token's own review layer. Members agree or disagree with
+  each; they never change a person's scoring or marks and never become human labels.
+- All or nothing. The client checks kinds, times, lengths and email addresses before
+  sending ("Mark 2: ..."); the server checks again, including `durationSec`, the channel
+  count and ids in the text.
+- `op_id`: without one, the client makes one from the recording and the marks, so the same
+  call sent again within 24 hours is answered from the first and writes nothing.
+- `total` is this token's live rows on the recording. At most 5,000 rows per token per
+  recording, withdrawn ones included (`mark_limit`). Refused where you are held blind.
+- Nothing about the recording comes back.
+
+## withdraw_marks
+
+Arguments: `id` (recording, required), `mark_ids` (optional, 1 to 500 of this token's mark
+ids). Without `mark_ids`, every live row of this token on the recording.
+
+```json
+{"withdrawn": 1, "total": 0}
+```
+
+- A soft delete: the rows leave the desk and `list_marks`; members' verdicts are kept. A
+  row already withdrawn counts as withdrawn. An id that is not this token's row on this
+  recording refuses the whole call (`not_found`). Refused where you are held blind.
+
+## create_review_task
+
+Arguments: `ids` (1 to 100 distinct recording ids, required), `member_id` (required, from
+`list_members`), `mode` (`blind` or `assisted`, required), `confirm_machine_seen` (default
+false).
+
+```json
+{"batchId": "batch_0001", "given": ["e_2"], "refused": [{"id": "e_0", "code": "machine_seen"}], "mailed": true}
+```
+
+- The page's "give a task": given by you, to the member, with the page's one email (which
+  never names the agent). You may give one to yourself.
+- `mailed` says whether the member was emailed this time. The email is braked per member:
+  at most one a minute and five an hour, and none for tasks you give yourself. The tasks
+  are given either way.
+- `refused` codes: `not_found`, `open_task` (the member has an open task on it), and for
+  `blind` only `no_source`, `staged` and `machine_seen`. `machine_seen` is not a confirm
+  step: report it, and only if the person decides, send those recordings again with
+  `confirm_machine_seen` true; the task is then recorded as not truly blind.
+- `batchId` names the blind batch (all its tasks stay blind until all are done); `null`
+  when nothing was given.
+
+## request_analysis
+
+Arguments: `id` (recording, required).
+
+Not available yet. The server checks the request as Analyse in the recording editor
+would, then answers `not_available` (HTTP 501) and starts nothing, until the analysis
+service accepts a service identity. The tool says "Starting an analysis from an agent is
+not available yet. Use Analyse on the recording page." Ask the person to press Analyse.
+
+- Checked in this order: the recording exists and you may see it (`not_found`), it has no
+  machine output (`already_analysed`, 409; re-analysis is not possible), no run is pending
+  (`{"status": "already"}`), it was uploaded as a file (`invalid_argument`), and you
+  uploaded it or are Insai staff (`forbidden`).
+- A later server that starts the run answers `{"status": "started"}`. Re-sending is safe.
+- Nothing about the run comes back: the recording row's `analysing` and
+  `machineAvailable` show it.
 
 For research use only. Not for clinical decision-making.

@@ -1,4 +1,4 @@
-"""The five local tools. Each takes plain arguments, returns a JSON-safe ``dict`` and raises
+"""The local tools. Each takes plain arguments, returns a JSON-safe ``dict`` and raises
 :class:`~nexus_workbench.local.errors.LocalToolError` for every expected failure.
 
 Results never contain a path, a file name, raw samples or EDF header text other than standard
@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -48,6 +49,26 @@ HYPNOGRAM_SLACK_EPOCHS = 2
 
 
 # ----------------------------------------------------------------------------- helpers
+
+
+@dataclass(frozen=True)
+class Supplied:
+    """Text given in place of a file, for example a workspace recording's machine staging.
+
+    ``file_id`` names it in results where a file's id would be; ``name`` names it in messages.
+    """
+
+    text: str
+    file_id: str
+    name: str
+
+
+def _text_input(source: str | Supplied, what: str) -> tuple[str, str, str]:
+    """``(text, id, name)`` of a path or a :class:`Supplied` text."""
+    if isinstance(source, Supplied):
+        return source.text, source.file_id, source.name
+    text, fid = read_text_file(source, what)
+    return text, fid, display_name(source)
 
 
 def _epoch_sec(epoch_sec: object) -> float:
@@ -475,17 +496,22 @@ def compute_band_power(
 # ----------------------------------------------------------------------------- hypnograms
 
 
-def compare_hypnograms(path_a: str, path_b: str, epoch_sec: float = 30.0) -> dict[str, Any]:
-    """Epoch-by-epoch agreement between two hypnograms of the same night (``a`` as reference)."""
+def compare_hypnograms(
+    path_a: str | Supplied, path_b: str | Supplied, epoch_sec: float = 30.0
+) -> dict[str, Any]:
+    """Epoch-by-epoch agreement between two hypnograms of the same night (``a`` as reference).
+
+    Either side may be a :class:`Supplied` text instead of a path.
+    """
     ep = _epoch_sec(epoch_sec)
-    text_a, id_a = read_text_file(path_a, "hypnogram")
-    text_b, id_b = read_text_file(path_b, "hypnogram")
-    a, first_a = read_hypnogram(text_a, display_name(path_a))
-    b, first_b = read_hypnogram(text_b, display_name(path_b))
+    text_a, id_a, name_a = _text_input(path_a, "hypnogram")
+    text_b, id_b, name_b = _text_input(path_b, "hypnogram")
+    a, first_a = read_hypnogram(text_a, name_a)
+    b, first_b = read_hypnogram(text_b, name_b)
     if len(a) != len(b):
         raise LocalToolError(
-            f"The hypnograms differ in length: {display_name(path_a)} has {len(a)} epochs and "
-            f"{display_name(path_b)} has {len(b)}. They must cover the same epochs of the same "
+            f"The hypnograms differ in length: {name_a} has {len(a)} epochs and "
+            f"{name_b} has {len(b)}. They must cover the same epochs of the same "
             "night; trim or pad one with ? for unscored epochs."
         )
     res = staging.compare(a, b)
@@ -548,8 +574,8 @@ def _nonneg(v: object, name: str, upper: float | None = None) -> float:
 
 
 def compare_events(
-    reference_path: str,
-    candidate_path: str,
+    reference_path: str | Supplied,
+    candidate_path: str | Supplied,
     min_overlap: float = 0.0,
     recording_hours: float | None = None,
     n_shuffles: int = 200,
@@ -557,7 +583,10 @@ def compare_events(
     tolerance_sec: float = 0.0,
     label: str | None = None,
 ) -> dict[str, Any]:
-    """Match candidate events to reference events one to one and score the agreement."""
+    """Match candidate events to reference events one to one and score the agreement.
+
+    Either side may be a :class:`Supplied` text instead of a path.
+    """
     mo = _nonneg(min_overlap, "min_overlap (seconds)", 3600)
     tol = _nonneg(tolerance_sec, "tolerance_sec", 3600)
     hours = None
@@ -574,10 +603,10 @@ def compare_events(
     if label is not None and (not isinstance(label, str) or not label.strip()):
         raise LocalToolError("label must be text, or left out to use every event.")
 
-    text_r, id_r = read_text_file(reference_path, "event file")
-    text_c, id_c = read_text_file(candidate_path, "event file")
-    ref = parse_events(text_r, display_name(reference_path))
-    cand = parse_events(text_c, display_name(candidate_path))
+    text_r, id_r, name_r = _text_input(reference_path, "event file")
+    text_c, id_c, name_c = _text_input(candidate_path, "event file")
+    ref = parse_events(text_r, name_r)
+    cand = parse_events(text_c, name_c)
     n_ref_all, n_cand_all = len(ref), len(cand)
     if label is not None:
         want = label.strip().lower()
@@ -649,10 +678,36 @@ def compare_events(
     )
 
 
+def preprocess(
+    path: str,
+    low_hz: float | None = None,
+    high_hz: float | None = None,
+    notch_hz: float | None = None,
+    resample_hz: float | None = None,
+    channels: list[str | int] | None = None,
+    out: str | None = None,
+) -> dict[str, Any]:
+    """Band-pass, notch, resample and pick channels of an EDF into a new EDF (see
+    :mod:`nexus_workbench.local.preprocess`). The input is never changed."""
+    from .preprocess import preprocess as run  # noqa: PLC0415
+
+    return run(
+        path,
+        low_hz=low_hz,
+        high_hz=high_hz,
+        notch_hz=notch_hz,
+        resample_hz=resample_hz,
+        channels=channels,
+        out=out,
+    )
+
+
 __all__ = [
+    "Supplied",
     "check_signal_quality",
     "compare_events",
     "compare_hypnograms",
     "compute_band_power",
     "inspect_edf",
+    "preprocess",
 ]

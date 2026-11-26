@@ -30,7 +30,9 @@ claude plugin validate . --strict
 The last line needs Claude Code. It checks the plugin and marketplace manifests.
 
 Tests never contact Workbench. The workspace tools are tested against a fake API in
-`tests/fake_api.py`.
+`tests/fake_api.py`, which implements the contract's version 1.1 rules (scopes, switches,
+blinding, caps, `opId`, audit). A change to those rules starts in the contract, then the
+fake, then the client.
 
 ## Test a wheel before a release
 
@@ -49,12 +51,48 @@ To keep your own agent config untouched, set `CLAUDE_CONFIG_DIR`, `CODEX_HOME`,
 `UV_TOOL_DIR`, `UV_TOOL_BIN_DIR` and `NEXUS_WORKBENCH_CONFIG_DIR` to empty folders
 first.
 
+## Testing a branch against a staging server
+
+To try a branch before it is released, install it from that branch:
+
+```sh
+uv tool install --force git+https://github.com/Insai/nexus-workbench@<branch>
+```
+
+Point it at the server you test against in the shell you use for the rest of these
+steps:
+
+```sh
+export NEXUS_API_URL=<staging API URL>
+```
+
+Sign in with the scopes you want to test. Each `--scope` adds one; `read` is always
+included:
+
+```sh
+nexus-workbench login --scope detail --scope marks:write --scope tasks:write
+```
+
+Then register the MCP server without signing in again:
+
+```sh
+nexus-workbench setup --no-login
+```
+
+`setup` saves `NEXUS_API_URL` with the server entry, so your agent talks to the same
+server. Restart the agent session to pick it up. To go back to the released version, run
+`uv tool install --force nexus-workbench`, unset `NEXUS_API_URL`, then run
+`nexus-workbench setup` again.
+
 ## Rules for changes
 
 - **Contract first.** [docs/contract.md](docs/contract.md) is the source of truth for the
   Workbench API and the error codes. A change to a request, a reply or a code starts as
   an edit to that file. [docs/tools.md](docs/tools.md) does the same for the local tools.
-- **Read-only.** No tool may change anything in Workbench or on the user's computer.
+- **Writes are scoped and reviewed.** A tool changes Workbench only with a write scope the
+  person chose, and its result is a proposal members review or exactly what the person
+  could do from the page (contract section 7). Read tools stay read-only. A local tool
+  never changes an existing file; `preprocess` writes only a new one.
 - **Privacy.** No tool returns names, paths, EDF header identity fields or raw samples.
   Keep the rules in the README's Privacy section true.
 - **Plain language.** Short sentences. Say what happened and what to do next. No hype
@@ -71,10 +109,10 @@ It checks that the tag matches the version in the package, runs the checks, buil
 publishes to PyPI and creates a GitHub release with the changelog section as notes and
 the built files attached.
 
-The version is written in four places: `pyproject.toml`,
-`src/nexus_workbench/__init__.py`, `.claude-plugin/plugin.json` and
-`.codex-plugin/plugin.json`. `scripts/bump_version.py` sets all four, and a test fails
-if they differ.
+The version is written in five places: `pyproject.toml`,
+`src/nexus_workbench/__init__.py`, `.claude-plugin/plugin.json`,
+`.codex-plugin/plugin.json` and `server.json` (the MCP Registry entry, twice).
+`scripts/bump_version.py` sets them all, and a test fails if they differ.
 
 1. Set the version:
 
@@ -103,7 +141,7 @@ if they differ.
    `python scripts/bump_version.py 1.2.4.dev0`, and add a new unreleased section to the
    changelog.
 
-The release stops before publishing if any of the four versions differs from the tag,
+The release stops before publishing if any of the versions differs from the tag,
 if a version contains `dev`, or if the changelog section is missing or still says
 unreleased.
 
@@ -127,7 +165,21 @@ PyPI uses trusted publishing, so there is no token to store.
    - Required reviewers: add at least one maintainer, so every upload waits for a
      person to approve it.
    - Deployment branches and tags: choose selected branches and tags, and add the tag
-     rule `v*.*.*`.
+     rules `v*.*.*` and `insai-v*.*.*`.
+
+### The `insai` package
+
+`packages/insai` is a small package that installs `nexus-workbench` and adds the `insai`
+command (the same CLI). Pushing a tag like `insai-v0.0.1` runs
+[.github/workflows/release-insai.yml](.github/workflows/release-insai.yml), which builds it,
+checks the `insai` command runs, and publishes it through the same `pypi` environment.
+
+- Its version lives only in `packages/insai/pyproject.toml` and
+  `packages/insai/src/insai/__init__.py`.
+- Publish `nexus-workbench` first: `insai` depends on it, and the release checks the
+  command runs against the version on PyPI.
+- PyPI needs a second trusted publisher: project `insai`, owner `Insai`, repository
+  `nexus-workbench`, workflow `release-insai.yml`, environment `pypi`.
 
 ## Report a problem
 
