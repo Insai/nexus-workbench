@@ -17,6 +17,15 @@ All notable changes to this package are listed here. The format follows
 - The `channels:write` scope (a write scope: `nexus-workbench login --scope channels:write`).
   A token without it gets `scope_required` with the exact `login` command.
 
+### Changed
+
+- `nexus-workbench login` waits for you to approve in the browser, then asks for the code.
+  When none of your workspaces has agent access yet, it says so, gives the page to request
+  it on, and exits 1 instead of waiting at `Code:`. It also stops with a clear sentence when
+  you are not in a workspace yet, or when the sign-in is denied or runs out of time. A
+  Workbench without this check (contract section 5.1, `status`) gets the code prompt at
+  once, as before.
+
 ## [0.2.1] - 2026-11-24
 
 Small changes that help an agent on its first try.

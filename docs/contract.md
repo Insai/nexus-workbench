@@ -371,6 +371,27 @@ A wrong `pollSecret` gives `login_expired` and does not use up an attempt.
 - Too many failed `exchange` calls from one address return 429
   `rate_limited`.
 
+`{"action": "status", "sessionId": "…", "pollSecret": "…"}`
+
+```json
+{"status": "pending", "reason": "no_agent_access"}
+```
+
+Where the sign-in stands, for the terminal that started it, so it can wait for
+the approval and then ask for the code. `status` is one of `pending`,
+`approved`, `denied`, `expired` or `used`. `reason` appears only while
+`pending`, after the person opened the approval page and cannot approve:
+`no_workspace` (they belong to no open workspace) or `no_agent_access` (none
+of their workspaces has agent access). It goes away when a later page load
+finds a workspace with access. A client may meet other reasons later and
+should keep waiting on one it does not know.
+
+- A wrong `pollSecret`, or an unknown session, returns 410 `login_expired`
+  and counts as a failed call from the address, like a failed `exchange`.
+- A server from before `status` answers 400 `invalid_argument`. A client
+  then asks for the code straight away.
+- Poll no more often than every 2 seconds.
+
 ### 5.2 Callable `workbench_cli_login_review` (signed-in person)
 
 | Action | Arguments | Returns |

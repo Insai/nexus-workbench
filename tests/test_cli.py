@@ -212,7 +212,9 @@ def test_browser_login(api: FakeAPI, monkeypatch: pytest.MonkeyPatch, capsys) ->
     assert "Sleep lab" in out
     stored = auth.load_token(API_BASE)
     assert stored.token in api.tokens
-    exchange = json.loads(api.requests[1].content)
+    status = json.loads(api.requests[1].content)
+    assert status["action"] == "status"  # an older server: refused, then the code is asked for
+    exchange = json.loads(api.requests[2].content)
     assert exchange["action"] == "exchange"
     assert exchange["code"] == codes[0].replace("-", "")
 
@@ -437,6 +439,206 @@ def test_browser_login_rate_limited(
     assert cli.main(["login"]) == 1
     err = assert_failed_cleanly(api, capsys, needle)
     assert "Too many sign-in requests" in err
+
+
+# -- waiting for approval (contract 5.1, ``status``) ---------------------------------
+
+
+def browser_does(monkeypatch: pytest.MonkeyPatch, *steps) -> list[float]:
+    """Run one browser step per poll interval (the waits themselves are skipped)."""
+    queue = list(steps)
+    waits: list[float] = []
+
+    def sleep(seconds: float) -> None:
+        waits.append(seconds)
+        if queue:
+            queue.pop(0)()
+
+    monkeypatch.setattr("time.sleep", sleep)
+    return waits
+
+
+def no_prompt(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    prompts: list[str] = []
+    monkeypatch.setattr("builtins.input", lambda text: prompts.append(text) or "")
+    return prompts
+
+
+def test_browser_login_waits_for_approval_then_asks_for_the_code(
+    api: FakeAPI, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    api.login_status = True
+    opened = no_browser(monkeypatch)
+    shown: list[str] = []
+    waits = browser_does(
+        monkeypatch,
+        lambda: api.open_page(opened[-1]),
+        lambda: shown.append(api.approve(opened[-1])),
+    )
+    prompts: list[str] = []
+
+    def prompt(text: str) -> str:
+        prompts.append(text)
+        assert shown, "the code is asked for only after approval"
+        return shown[0]
+
+    monkeypatch.setattr("builtins.input", prompt)
+    assert cli.main(["login"]) == 0
+    out = capsys.readouterr().out
+    assert out.count("Waiting for you to approve in the browser") == 1
+    assert "Approved." in out
+    assert "none of your workspaces has agent access" in out  # the prompt covers the dead end
+    assert prompts == ["Code: "]
+    assert waits == [2.0, 2.0]
+    assert auth.load_token(API_BASE).token in api.tokens
+
+
+def test_browser_login_already_approved_asks_at_once(
+    api: FakeAPI, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    api.login_status = True
+    opened = no_browser(monkeypatch)
+    real_open = c.WorkbenchClient.cli_login_start
+
+    def start_and_approve(self, **k: Any) -> dict[str, Any]:
+        data = real_open(self, **k)
+        api.approve(data["approvalUrl"])
+        return data
+
+    monkeypatch.setattr(c.WorkbenchClient, "cli_login_start", start_and_approve)
+    waits = browser_does(monkeypatch)
+
+    def prompt(text: str) -> str:
+        session = next(iter(api.sessions.values()))
+        assert session.code is not None
+        return session.code
+
+    monkeypatch.setattr("builtins.input", prompt)
+    assert cli.main(["login"]) == 0
+    out = capsys.readouterr().out
+    assert "Waiting for you" not in out and "Approved." not in out
+    assert waits == [] and opened
+
+
+def test_browser_login_no_agent_access_explains_and_stops(
+    api: FakeAPI, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    api.login_status = True
+    api.agent_access = False
+    opened = no_browser(monkeypatch)
+    browser_does(monkeypatch, lambda: api.open_page(opened[-1]))
+    prompts = no_prompt(monkeypatch)
+    assert cli.main(["login"]) == 1
+    err = assert_failed_cleanly(api, capsys, "None of your workspaces has agent access yet")
+    assert f"Request it at {opened[-1]};" in err
+    assert "run `nexus-workbench login` again once it's on." in err
+    assert "(login_failed)" in err and "login_cancelled" not in err
+    assert prompts == []
+
+
+def test_browser_login_no_workspace_explains_and_stops(
+    api: FakeAPI, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    api.login_status = True
+    opened = no_browser(monkeypatch)
+
+    def outsider_opens() -> None:
+        next(iter(api.sessions.values())).blocked = "no_workspace"
+
+    browser_does(monkeypatch, outsider_opens)
+    prompts = no_prompt(monkeypatch)
+    assert cli.main(["login"]) == 1
+    err = assert_failed_cleanly(api, capsys, "not in a Workbench workspace yet")
+    assert "invite-only" in err and opened
+    assert prompts == []
+
+
+def test_browser_login_denied_in_the_browser(
+    api: FakeAPI, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    api.login_status = True
+    opened = no_browser(monkeypatch)
+    browser_does(monkeypatch, lambda: api.deny(opened[-1]))
+    prompts = no_prompt(monkeypatch)
+    assert cli.main(["login"]) == 1
+    assert_failed_cleanly(api, capsys, "denied in the browser")
+    assert prompts == []
+
+
+def test_browser_login_expires_while_waiting(
+    api: FakeAPI, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    api.login_status = True
+    no_browser(monkeypatch)
+    browser_does(monkeypatch, api.sessions.clear)
+    no_prompt(monkeypatch)
+    assert cli.main(["login"]) == 1
+    assert_failed_cleanly(api, capsys, "ran out of time or was cancelled")
+
+
+def test_browser_login_never_approved_stops_waiting(
+    api: FakeAPI, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    from nexus_workbench import login
+
+    api.login_status = True
+    no_browser(monkeypatch)
+    waits = browser_does(monkeypatch)
+    no_prompt(monkeypatch)
+    assert cli.main(["login"]) == 1
+    assert_failed_cleanly(api, capsys, "ran out of time or was cancelled")
+    assert len(waits) == login.MAX_POLLS
+
+
+def test_browser_login_ctrl_c_while_waiting(
+    api: FakeAPI, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    api.login_status = True
+    no_browser(monkeypatch)
+
+    def interrupt() -> None:
+        raise KeyboardInterrupt
+
+    browser_does(monkeypatch, interrupt)
+    no_prompt(monkeypatch)
+    assert cli.main(["login"]) == 1
+    assert "Sign-in was cancelled (login_cancelled). Run" in capsys.readouterr().err
+
+
+def test_setup_reports_no_agent_access_as_a_failure(
+    api: FakeAPI, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from nexus_workbench import setup_cmd
+
+    api.login_status = True
+    api.agent_access = False
+    opened = no_browser(monkeypatch)
+    browser_does(monkeypatch, lambda: api.open_page(opened[-1]))
+    no_prompt(monkeypatch)
+    with cli._client() as client:
+        status = cli.do_login(
+            client, token_prompt=False, use_keyring=False, cancelled=setup_cmd.LOGIN_SKIPPED
+        )
+    assert status == cli.FAILURE
+
+
+@pytest.mark.parametrize("reply", [{"status": "thinking"}, {}])
+def test_browser_login_odd_status_reply_asks_for_the_code(
+    api: FakeAPI, monkeypatch: pytest.MonkeyPatch, reply: dict[str, Any]
+) -> None:
+    opened = no_browser(monkeypatch)
+    monkeypatch.setattr(c.WorkbenchClient, "_post", _status_reply(c.WorkbenchClient._post, reply))
+    monkeypatch.setattr("builtins.input", approve_on_first_prompt(api, opened))
+    assert cli.main(["login"]) == 0
+
+
+def _status_reply(real, reply: dict[str, Any]):
+    def post(self, path: str, body: dict[str, Any], **k: Any) -> dict[str, Any]:
+        if body.get("action") == "status":
+            return dict(reply)
+        return real(self, path, body, **k)
+
+    return post
 
 
 @pytest.mark.parametrize(

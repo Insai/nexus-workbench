@@ -138,6 +138,10 @@ class LoginSession:
     used: bool = False
     scopes: list[str] = field(default_factory=lambda: ["read"])
     device_name: str = ""
+    denied: bool = False
+    # Set when the person who opened the page cannot approve: "no_workspace" or
+    # "no_agent_access" (contract 5.1, ``status``).
+    blocked: str | None = None
 
 
 @dataclass
@@ -167,6 +171,8 @@ class FakeAPI:
     token_limit: bool = False  # True -> exchange with the right code returns 409 token_limit
     # Refusals to send first for one sign-in action: {"start": [(403, "forbidden")], ...}.
     login_errors: dict[str, list[tuple[int, str]]] = field(default_factory=dict)
+    # False: a server from before ``status`` (contract 5.1), which answers it "Unknown action".
+    login_status: bool = False
 
     # -- version 1.1 (contract section 7) ---------------------------------------------------
     v11: bool = True  # False: a version 1 server, which answers 1.1 actions "Unknown action"
@@ -1044,7 +1050,31 @@ class FakeAPI:
                     "expiresAt": "2027-02-18T09:25:00Z",
                 }
             )
+        if action == "status" and self.login_status:
+            session = self.sessions.get(str(body.get("sessionId")))
+            if session is None or body.get("pollSecret") != session.poll_secret:
+                return _error(410, "login_expired", "This sign-in has expired.")
+            if session.denied:
+                return _ok({"status": "denied"})
+            if session.used:
+                return _ok({"status": "used"})
+            if session.attempts_left <= 0:
+                return _ok({"status": "expired"})
+            if session.code is not None:
+                return _ok({"status": "approved"})
+            out: dict[str, Any] = {"status": "pending"}
+            if session.blocked:
+                out["reason"] = session.blocked
+            return _ok(out)
         return _bad("Unknown action.")
+
+    def open_page(self, url: str) -> None:
+        """A person opens the approval page: ``get`` notes whether they can approve."""
+        session = self.sessions[url.rstrip("/").rsplit("/", 1)[-1]]
+        session.blocked = None if self.agent_access else "no_agent_access"
+
+    def deny(self, url: str) -> None:
+        self.sessions[url.rstrip("/").rsplit("/", 1)[-1]].denied = True
 
     def approve(self, url: str, scopes: list[str] | None = None) -> str:
         """What a person does in the browser: approve (optionally fewer scopes), read the code.
