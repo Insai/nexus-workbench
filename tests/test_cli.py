@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import io
 import json
-import math
 import shlex
 from pathlib import Path
 from typing import Any
@@ -521,44 +520,48 @@ def test_browser_login_already_approved_asks_at_once(
     assert waits == [] and opened
 
 
-def grace_polls() -> int:
-    from nexus_workbench import login
-
-    return math.ceil(login.BLOCKED_GRACE_SECONDS / login.POLL_INTERVAL)
-
-
-def test_browser_login_no_agent_access_explains_and_stops_when_it_lasts(
+def test_browser_login_no_agent_access_keeps_waiting_until_expiry(
     api: FakeAPI, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
+    from nexus_workbench import login
+
     api.login_status = True
     api.agent_access = False
     opened = no_browser(monkeypatch)
     waits = browser_does(monkeypatch, lambda: api.open_page(opened[-1]))
     prompts = no_prompt(monkeypatch)
-    assert cli.main(["login"]) == 1
-    out = capsys.readouterr().out
-    assert out.count("None of your workspaces has agent access yet") == 1  # said once
-    assert "switch accounts in the browser" in out
-    # One wait before the page opens, then the whole grace period.
-    assert len(waits) == 1 + grace_polls()
+    assert cli.main(["login"]) == 1  # as for any expired sign-in
+    captured = capsys.readouterr()
+    assert captured.out.count("None of your workspaces has agent access yet") == 1  # said once
+    assert captured.out.count("Still waiting. Switch account and reload the page") == 1
+    assert "press Ctrl-C to stop" in captured.out
+    assert len(waits) == login.MAX_POLLS  # the reason never ends the wait; the session does
     assert prompts == []
+    err = captured.err
+    assert "ran out of time" in err
+    assert opened[-1] not in err  # the approval link expires with the sign-in
+    assert "Request it in Workbench (https://workbench.test.invalid/)" in err
+    assert "Connect an agent, Request agent access." in err
+    assert "(login_failed)" in err and "login_cancelled" not in err
+    assert auth.load_token(API_BASE).token is None
 
 
-def test_browser_login_no_agent_access_points_at_a_page_that_does_not_expire(
+def test_browser_login_reason_then_server_expiry_repeats_where_to_request(
     api: FakeAPI, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
     api.login_status = True
     api.agent_access = False
     opened = no_browser(monkeypatch)
-    browser_does(monkeypatch, lambda: api.open_page(opened[-1]))
+    browser_does(
+        monkeypatch,
+        lambda: api.open_page(opened[-1]),
+        lambda: None,
+        lambda: setattr(next(iter(api.sessions.values())), "attempts_left", 0),
+    )
     no_prompt(monkeypatch)
     assert cli.main(["login"]) == 1
-    err = assert_failed_cleanly(api, capsys, "None of your workspaces has agent access yet")
-    assert opened[-1] not in err  # the approval link expires with the sign-in
+    err = assert_failed_cleanly(api, capsys, "ran out of time")
     assert "Request it in Workbench (https://workbench.test.invalid/)" in err
-    assert "Connect an agent, Request agent access." in err
-    assert "Run `nexus-workbench login` again once it's on." in err
-    assert "(login_failed)" in err and "login_cancelled" not in err
 
 
 @pytest.mark.parametrize(
@@ -597,26 +600,83 @@ def test_browser_login_wrong_account_then_approved_signs_in(
     assert cli.main(["login"]) == 0
     out = capsys.readouterr().out
     assert out.count("not in a Workbench workspace yet") == 1
+    assert out.count("Still waiting. Switch account and reload the page") == 1
     assert "Approved." in out
     assert len(waits) == 4
     assert auth.load_token(API_BASE).token in api.tokens
 
 
-def test_browser_login_no_workspace_explains_and_stops_when_it_lasts(
+def test_browser_login_someone_else_opens_the_page_then_the_right_account_approves(
+    api: FakeAPI, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    from nexus_workbench import login
+
+    api.login_status = True
+    opened = no_browser(monkeypatch)
+    shown: list[str] = []
+
+    def outsider_opens() -> None:
+        next(iter(api.sessions.values())).blocked = "no_agent_access"
+
+    # The reason outlasts any short grace window: well past 45 seconds of polls.
+    idle = [lambda: None] * 60
+    waits = browser_does(
+        monkeypatch,
+        outsider_opens,
+        *idle,
+        lambda: api.open_page(opened[-1]),
+        lambda: shown.append(api.approve(opened[-1])),
+    )
+    monkeypatch.setattr("builtins.input", lambda text: shown[0])
+    assert cli.main(["login"]) == 0
+    out = capsys.readouterr().out
+    assert out.count("None of your workspaces has agent access yet") == 1
+    assert "Approved." in out
+    assert len(waits) == 63 and len(waits) * login.POLL_INTERVAL > 45
+    assert auth.load_token(API_BASE).token in api.tokens
+
+
+def test_browser_login_reason_changes_is_explained_again(
     api: FakeAPI, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
     api.login_status = True
     opened = no_browser(monkeypatch)
+    shown: list[str] = []
 
-    def outsider_opens() -> None:
-        next(iter(api.sessions.values())).blocked = "no_workspace"
+    def reason(value: str | None):
+        return lambda: setattr(next(iter(api.sessions.values())), "blocked", value)
 
-    waits = browser_does(monkeypatch, outsider_opens)
+    browser_does(
+        monkeypatch,
+        reason("no_workspace"),
+        lambda: None,
+        reason("no_agent_access"),
+        lambda: None,
+        reason("no_agent_access"),  # same reason again: not repeated
+        lambda: shown.append(api.approve(opened[-1])),
+    )
+    monkeypatch.setattr("builtins.input", lambda text: shown[0])
+    assert cli.main(["login"]) == 0
+    out = capsys.readouterr().out
+    assert out.count("not in a Workbench workspace yet") == 1
+    assert out.count("None of your workspaces has agent access yet") == 1
+    assert out.count("Still waiting.") == 2
+    assert out.index("not in a Workbench workspace yet") < out.index(
+        "None of your workspaces has agent access yet"
+    )
+
+
+def test_browser_login_reason_then_denied_says_denied(
+    api: FakeAPI, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    api.login_status = True
+    api.agent_access = False
+    opened = no_browser(monkeypatch)
+    browser_does(monkeypatch, lambda: api.open_page(opened[-1]), lambda: api.deny(opened[-1]))
     prompts = no_prompt(monkeypatch)
     assert cli.main(["login"]) == 1
-    err = assert_failed_cleanly(api, capsys, "not in a Workbench workspace yet")
-    assert "invite-only" in err and opened
-    assert len(waits) == 1 + grace_polls()
+    err = assert_failed_cleanly(api, capsys, "denied in the browser")
+    assert "ran out of time" not in err
     assert prompts == []
 
 
@@ -629,7 +689,8 @@ def test_browser_login_blocked_then_expired_says_expired(
     browser_does(monkeypatch, lambda: api.open_page(opened[-1]), api.sessions.clear)
     no_prompt(monkeypatch)
     assert cli.main(["login"]) == 1
-    assert_failed_cleanly(api, capsys, "ran out of time or was cancelled")
+    err = assert_failed_cleanly(api, capsys, "ran out of time")
+    assert "Request it in Workbench (https://workbench.test.invalid/)" in err
 
 
 def _status_network_errors(real, failures: list[int]):

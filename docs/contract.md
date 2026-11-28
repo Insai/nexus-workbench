@@ -386,10 +386,16 @@ of their workspaces has agent access). It goes away when a later page load
 finds a workspace with access. A client may meet other reasons later and
 should keep waiting on one it does not know.
 
-The reason belongs to whoever opened the page last, so it can clear: the
-person switches browser accounts, or someone who can approve opens the link.
-A client should explain it once and keep waiting, and stop only when it has
-lasted a while (the CLI waits 45 seconds) or the sign-in ends. A message that
+The reason is advisory: it belongs to whoever opened the page last, so it
+can clear when the person switches browser accounts or someone who can approve
+opens the link, and anyone with the link can set it by opening the page. A
+client should explain it (again only when it changes) and keep waiting. It
+must not end the sign-in on a reason, however long it lasts, or someone else
+opening the page could keep the right person from signing in. Only `approved`,
+`denied`, `expired`, `used` or a 410 end the wait. `denied` and `expired` are
+distinct by design: a denial is a decision someone made on the page, expiry is
+the session running out (10 minutes). When the sign-in ends while a reason
+shows, the client repeats where to request agent access. A message that
 tells the person where to request agent access names the Workbench app, never
 the approval URL, which expires with the sign-in. A network failure while
 polling is not a refusal: back off and try again, and after a few in a row
