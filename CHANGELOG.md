@@ -20,11 +20,14 @@ All notable changes to this package are listed here. The format follows
 ### Changed
 
 - `nexus-workbench login` waits for you to approve in the browser, then asks for the code.
-  When none of your workspaces has agent access yet, it says so, gives the page to request
-  it on, and exits 1 instead of waiting at `Code:`. It also stops with a clear sentence when
-  you are not in a workspace yet, or when the sign-in is denied or runs out of time. A
-  Workbench without this check (contract section 5.1, `status`) gets the code prompt at
-  once, as before.
+  When the page says none of your workspaces has agent access yet, or you are not in a
+  workspace yet, it explains once and keeps waiting, so you can switch browser accounts or
+  pass the link to someone who can approve. If that lasts 45 seconds it exits 1 instead of
+  waiting at `Code:`, and tells you where in Workbench to request access (a page that does
+  not expire, not the 10-minute approval link). It stops at once when the sign-in is denied
+  or runs out of time. A network blip while waiting is retried with backoff; after a few in
+  a row, or on a Workbench without this check (contract section 5.1, `status`), you get the
+  code prompt, as before.
 
 ## [0.2.1] - 2026-11-24
 

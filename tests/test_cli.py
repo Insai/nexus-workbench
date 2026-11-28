@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import math
 import shlex
 from pathlib import Path
 from typing import Any
@@ -520,23 +521,88 @@ def test_browser_login_already_approved_asks_at_once(
     assert waits == [] and opened
 
 
-def test_browser_login_no_agent_access_explains_and_stops(
+def grace_polls() -> int:
+    from nexus_workbench import login
+
+    return math.ceil(login.BLOCKED_GRACE_SECONDS / login.POLL_INTERVAL)
+
+
+def test_browser_login_no_agent_access_explains_and_stops_when_it_lasts(
+    api: FakeAPI, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    api.login_status = True
+    api.agent_access = False
+    opened = no_browser(monkeypatch)
+    waits = browser_does(monkeypatch, lambda: api.open_page(opened[-1]))
+    prompts = no_prompt(monkeypatch)
+    assert cli.main(["login"]) == 1
+    out = capsys.readouterr().out
+    assert out.count("None of your workspaces has agent access yet") == 1  # said once
+    assert "switch accounts in the browser" in out
+    # One wait before the page opens, then the whole grace period.
+    assert len(waits) == 1 + grace_polls()
+    assert prompts == []
+
+
+def test_browser_login_no_agent_access_points_at_a_page_that_does_not_expire(
     api: FakeAPI, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
     api.login_status = True
     api.agent_access = False
     opened = no_browser(monkeypatch)
     browser_does(monkeypatch, lambda: api.open_page(opened[-1]))
-    prompts = no_prompt(monkeypatch)
+    no_prompt(monkeypatch)
     assert cli.main(["login"]) == 1
     err = assert_failed_cleanly(api, capsys, "None of your workspaces has agent access yet")
-    assert f"Request it at {opened[-1]};" in err
-    assert "run `nexus-workbench login` again once it's on." in err
+    assert opened[-1] not in err  # the approval link expires with the sign-in
+    assert "Request it in Workbench (https://workbench.test.invalid/)" in err
+    assert "Connect an agent, Request agent access." in err
+    assert "Run `nexus-workbench login` again once it's on." in err
     assert "(login_failed)" in err and "login_cancelled" not in err
-    assert prompts == []
 
 
-def test_browser_login_no_workspace_explains_and_stops(
+@pytest.mark.parametrize(
+    ("approval_url", "home"),
+    [
+        ("https://workbench.example/cli/login/abc", "https://workbench.example/"),
+        ("https://cockpit.example/workbench/cli/login/abc", "https://cockpit.example/workbench/"),
+        ("http://workbench.example/cli/login/abc", None),
+        ("not a url", None),
+    ],
+)
+def test_workbench_home(approval_url: str, home: str | None) -> None:
+    from nexus_workbench import login
+
+    assert login.workbench_home(approval_url) == home
+
+
+def test_browser_login_wrong_account_then_approved_signs_in(
+    api: FakeAPI, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    api.login_status = True
+    opened = no_browser(monkeypatch)
+    shown: list[str] = []
+
+    def outsider_opens() -> None:
+        next(iter(api.sessions.values())).blocked = "no_workspace"
+
+    waits = browser_does(
+        monkeypatch,
+        outsider_opens,
+        lambda: None,
+        lambda: api.open_page(opened[-1]),  # a member reloads the page: the reason clears
+        lambda: shown.append(api.approve(opened[-1])),
+    )
+    monkeypatch.setattr("builtins.input", lambda text: shown[0])
+    assert cli.main(["login"]) == 0
+    out = capsys.readouterr().out
+    assert out.count("not in a Workbench workspace yet") == 1
+    assert "Approved." in out
+    assert len(waits) == 4
+    assert auth.load_token(API_BASE).token in api.tokens
+
+
+def test_browser_login_no_workspace_explains_and_stops_when_it_lasts(
     api: FakeAPI, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
     api.login_status = True
@@ -545,12 +611,72 @@ def test_browser_login_no_workspace_explains_and_stops(
     def outsider_opens() -> None:
         next(iter(api.sessions.values())).blocked = "no_workspace"
 
-    browser_does(monkeypatch, outsider_opens)
+    waits = browser_does(monkeypatch, outsider_opens)
     prompts = no_prompt(monkeypatch)
     assert cli.main(["login"]) == 1
     err = assert_failed_cleanly(api, capsys, "not in a Workbench workspace yet")
     assert "invite-only" in err and opened
+    assert len(waits) == 1 + grace_polls()
     assert prompts == []
+
+
+def test_browser_login_blocked_then_expired_says_expired(
+    api: FakeAPI, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    api.login_status = True
+    api.agent_access = False
+    opened = no_browser(monkeypatch)
+    browser_does(monkeypatch, lambda: api.open_page(opened[-1]), api.sessions.clear)
+    no_prompt(monkeypatch)
+    assert cli.main(["login"]) == 1
+    assert_failed_cleanly(api, capsys, "ran out of time or was cancelled")
+
+
+def _status_network_errors(real, failures: list[int]):
+    def status(self, **k: Any) -> dict[str, Any]:
+        if failures and failures[0] > 0:
+            failures[0] -= 1
+            raise c.NetworkError()
+        return real(self, **k)
+
+    return status
+
+
+def test_browser_login_network_blip_while_waiting_keeps_waiting(
+    api: FakeAPI, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    from nexus_workbench import login
+
+    api.login_status = True
+    opened = no_browser(monkeypatch)
+    left = [login.MAX_STATUS_NETWORK_FAILURES - 1]
+    monkeypatch.setattr(
+        c.WorkbenchClient,
+        "cli_login_status",
+        _status_network_errors(c.WorkbenchClient.cli_login_status, left),
+    )
+    shown: list[str] = []
+    waits = browser_does(monkeypatch, lambda: None, lambda: shown.append(api.approve(opened[-1])))
+    monkeypatch.setattr("builtins.input", lambda text: shown[0])
+    assert cli.main(["login"]) == 0
+    assert waits[:2] == [4.0, 8.0]  # backs off, then polls as usual
+    assert "Could not check" not in capsys.readouterr().err
+
+
+def test_browser_login_network_down_while_waiting_asks_for_the_code(
+    api: FakeAPI, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    api.login_status = True
+    opened = no_browser(monkeypatch)
+    monkeypatch.setattr(
+        c.WorkbenchClient,
+        "cli_login_status",
+        _status_network_errors(c.WorkbenchClient.cli_login_status, [10**6]),
+    )
+    browser_does(monkeypatch)
+    monkeypatch.setattr("builtins.input", approve_on_first_prompt(api, opened))
+    assert cli.main(["login"]) == 0
+    assert "Could not check the sign-in with Workbench" in capsys.readouterr().err
 
 
 def test_browser_login_denied_in_the_browser(

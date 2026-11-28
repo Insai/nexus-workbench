@@ -13,6 +13,7 @@ import webbrowser
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, TextIO
+from urllib.parse import urlsplit
 
 from . import auth
 from . import scopes as sc
@@ -23,6 +24,7 @@ from .client import (
     InvalidArgument,
     LoginExpired,
     LoginNotAvailable,
+    NetworkError,
     RateLimited,
     TokenExpired,
     Unauthenticated,
@@ -43,6 +45,14 @@ DEVICE_NAME_LIMIT = 64
 POLL_INTERVAL = 2.0
 #: Polls before giving up: a sign-in lives 10 minutes (contract 5.1).
 MAX_POLLS = 300
+#: How long a "cannot approve" reason must last before the sign-in stops. The reason belongs
+#: to whoever opened the page last, so it can clear: the person switches to another browser
+#: account, or someone who can approve opens the link (contract 5.1).
+BLOCKED_GRACE_SECONDS = 45.0
+#: ``status`` calls in a row that may fail to reach Workbench before the code is asked for.
+MAX_STATUS_NETWORK_FAILURES = 3
+#: The longest pause between ``status`` calls after a network failure.
+MAX_NETWORK_BACKOFF = 16.0
 FALLBACK_DEVICE_NAME = "computer"
 #: Printed when a sign-in asks for a write scope (contract 7.9).
 WRITE_SCOPES_NOTE = (
@@ -67,12 +77,38 @@ APPROVE_PROMPT = (
     "`nexus-workbench login` again once it's on."
 )
 WAITING_MESSAGE = "Waiting for you to approve in the browser..."
+BLOCKED_NOTE = (
+    "If the page opened on the wrong account, switch accounts in the browser and reload it. "
+    "Waiting {seconds} seconds more..."
+)
+STATUS_UNREACHABLE_NOTE = (
+    "Could not check the sign-in with Workbench. Approve in the browser, then type the code "
+    "shown there."
+)
 
 
-def no_agent_access_message(url: str) -> str:
+def workbench_home(approval_url: str) -> str | None:
+    """The Workbench app the approval page belongs to: a page that does not expire.
+
+    The approval URL is ``<workbench>/cli/login/<session>`` and lives only as long as the
+    sign-in, so it is never the place to send someone later.
+    """
+    try:
+        parts = urlsplit(approval_url)
+    except ValueError:
+        return None
+    if parts.scheme != "https" or not parts.netloc:
+        return None
+    base = parts.path.split("/cli/login/", 1)[0].rstrip("/")
+    return f"https://{parts.netloc}{base}/"
+
+
+def no_agent_access_message(approval_url: str) -> str:
+    home = workbench_home(approval_url)
+    where = f"Workbench ({home})" if home else "Workbench"
     return (
-        f"None of your workspaces has agent access yet. Request it at {url}; "
-        "run `nexus-workbench login` again once it's on."
+        f"None of your workspaces has agent access yet. Request it in {where}: account menu, "
+        "Connect an agent, Request agent access. Run `nexus-workbench login` again once it's on."
     )
 
 
@@ -380,16 +416,30 @@ def login_with_browser(
     )
 
 
+def _blocked_message(reason: str | None, url: str) -> str | None:
+    """What a known "cannot approve" reason means, or None for no reason or an unknown one."""
+    if reason == "no_agent_access":
+        return no_agent_access_message(url)
+    if reason == "no_workspace":
+        return NO_WORKSPACE_MESSAGE
+    return None
+
+
 def _wait_for_approval(
     client: WorkbenchClient, io: LoginIO, session: dict[str, Any], url: str
 ) -> None:
     """Poll ``status`` until the person approves, then return so the code can be typed.
 
-    Raises LoginFailed when the sign-in cannot go on: no workspace, none with agent access,
-    denied or expired. A server without ``status`` returns at once (the code prompt follows,
-    as before).
+    A "cannot approve" reason (no workspace, none with agent access) is explained once and
+    the wait goes on: it may clear when the person switches accounts or someone with access
+    opens the link. Only a reason that lasts ``BLOCKED_GRACE_SECONDS`` stops the sign-in.
+    Denied and expired stop it at once. A server without ``status`` returns at once (the code
+    prompt follows, as before), and so do a few network failures in a row.
     """
     said_waiting = False
+    blocked: str | None = None  # the message for the reason now showing
+    blocked_for = 0.0  # seconds it has shown
+    network_failures = 0
     try:
         for _ in range(MAX_POLLS):
             try:
@@ -398,25 +448,41 @@ def _wait_for_approval(
                 )
             except (InvalidArgument, LoginNotAvailable, UnexpectedResponse):
                 return  # an older server: ask for the code straight away
+            except NetworkError:
+                network_failures += 1
+                if network_failures >= MAX_STATUS_NETWORK_FAILURES:
+                    print(STATUS_UNREACHABLE_NOTE, file=io.err)
+                    return
+                io.sleep(min(POLL_INTERVAL * 2**network_failures, MAX_NETWORK_BACKOFF))
+                continue
             except WorkbenchError as exc:
                 raise sign_in_failure(exc) from None
+            network_failures = 0
             status, reason = state["status"], state["reason"]
             if status == "approved":
                 if said_waiting:
                     io.say("Approved.")
                 return
-            if status == "pending" and reason == "no_agent_access":
-                raise LoginFailed(no_agent_access_message(url))
-            if status == "pending" and reason == "no_workspace":
-                raise LoginFailed(NO_WORKSPACE_MESSAGE)
             if status == "denied":
                 raise LoginFailed(DENIED_MESSAGE)
             if status in ("expired", "used"):
                 raise LoginFailed(EXPIRED_MESSAGE)
+            message = _blocked_message(reason, url) if status == "pending" else None
+            if message is None:
+                blocked, blocked_for = None, 0.0
+            elif message != blocked:
+                blocked, blocked_for = message, 0.0
+                io.say(message)
+                io.say(BLOCKED_NOTE.format(seconds=math.ceil(BLOCKED_GRACE_SECONDS)))
+                said_waiting = True
+            elif blocked_for >= BLOCKED_GRACE_SECONDS:
+                raise LoginFailed(message)
             if not said_waiting:
                 io.say(WAITING_MESSAGE)
                 said_waiting = True
             io.sleep(POLL_INTERVAL)
+            if blocked is not None:
+                blocked_for += POLL_INTERVAL
     except KeyboardInterrupt:
         io.say()
         raise LoginCancelled(CANCELLED_MESSAGE) from None

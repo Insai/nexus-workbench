@@ -386,6 +386,15 @@ of their workspaces has agent access). It goes away when a later page load
 finds a workspace with access. A client may meet other reasons later and
 should keep waiting on one it does not know.
 
+The reason belongs to whoever opened the page last, so it can clear: the
+person switches browser accounts, or someone who can approve opens the link.
+A client should explain it once and keep waiting, and stop only when it has
+lasted a while (the CLI waits 45 seconds) or the sign-in ends. A message that
+tells the person where to request agent access names the Workbench app, never
+the approval URL, which expires with the sign-in. A network failure while
+polling is not a refusal: back off and try again, and after a few in a row
+ask for the code as a server without `status` would.
+
 - A wrong `pollSecret`, or an unknown session, returns 410 `login_expired`
   and counts as a failed call from the address, like a failed `exchange`.
 - A server from before `status` answers 400 `invalid_argument`. A client
