@@ -28,6 +28,8 @@ REQUEST_ACCESS_HINT = (
 )
 AGENT_API_PATH = "/workbench_agent_api"
 CLI_LOGIN_PATH = "/workbench_cli_login"
+#: What ``workbench_cli_login`` ``status`` may answer (contract 5.1).
+LOGIN_STATUSES = frozenset({"pending", "approved", "denied", "expired", "used"})
 
 ENV_API_URL = "NEXUS_API_URL"
 ENV_ALLOW_INSECURE_LOCAL = "NEXUS_ALLOW_INSECURE_LOCAL"
@@ -872,3 +874,16 @@ class WorkbenchClient:
         if not isinstance(data.get("token"), str):
             raise UnexpectedResponse()
         return data
+
+    def cli_login_status(self, *, session_id: str, poll_secret: str) -> dict[str, Any]:
+        """Where a sign-in stands, for the terminal that started it (contract 5.1).
+
+        A server without ``status`` answers ``invalid_argument``; the caller then asks for the
+        code straight away, as before.
+        """
+        body = {"action": "status", "sessionId": session_id, "pollSecret": poll_secret}
+        data = self._post(CLI_LOGIN_PATH, body, token=None, login_endpoint=True)
+        if data.get("status") not in LOGIN_STATUSES:
+            raise UnexpectedResponse()
+        reason = data.get("reason")
+        return {"status": data["status"], "reason": reason if isinstance(reason, str) else None}

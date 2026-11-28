@@ -7,11 +7,13 @@ import getpass
 import math
 import socket
 import sys
+import time
 import unicodedata
 import webbrowser
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, TextIO
+from urllib.parse import urlsplit
 
 from . import auth
 from . import scopes as sc
@@ -22,9 +24,11 @@ from .client import (
     InvalidArgument,
     LoginExpired,
     LoginNotAvailable,
+    NetworkError,
     RateLimited,
     TokenExpired,
     Unauthenticated,
+    UnexpectedResponse,
     WorkbenchClient,
     WorkbenchError,
     WriteAccessRequired,
@@ -37,6 +41,14 @@ CODE_LENGTH = 8
 MAX_LOCAL_RETRIES = 10
 MAX_PENDING_REPLIES = 10
 DEVICE_NAME_LIMIT = 64
+#: Seconds between ``status`` calls while the person approves in the browser.
+POLL_INTERVAL = 2.0
+#: Polls before giving up: a sign-in lives 10 minutes (contract 5.1).
+MAX_POLLS = 300
+#: ``status`` calls in a row that may fail to reach Workbench before the code is asked for.
+MAX_STATUS_NETWORK_FAILURES = 3
+#: The longest pause between ``status`` calls after a network failure.
+MAX_NETWORK_BACKOFF = 16.0
 FALLBACK_DEVICE_NAME = "computer"
 #: Printed when a sign-in asks for a write scope (contract 7.9).
 WRITE_SCOPES_NOTE = (
@@ -55,6 +67,71 @@ class LoginCancelled(LoginFailed):
 
 
 CANCELLED_MESSAGE = "Sign-in was cancelled. Run `nexus-workbench login` to start again."
+APPROVE_PROMPT = (
+    "After you approve, Workbench shows a code like ABCD-EFGH. If it says none of your "
+    "workspaces has agent access yet, request it on that page and run "
+    "`nexus-workbench login` again once it's on."
+)
+WAITING_MESSAGE = "Waiting for you to approve in the browser..."
+STILL_WAITING_NOTE = "Still waiting. Switch account and reload the page, or press Ctrl-C to stop."
+STATUS_UNREACHABLE_NOTE = (
+    "Could not check the sign-in with Workbench. Approve in the browser, then type the code "
+    "shown there."
+)
+
+
+def workbench_home(approval_url: str) -> str | None:
+    """The Workbench app the approval page belongs to: a page that does not expire.
+
+    The approval URL is ``<workbench>/cli/login/<session>`` and lives only as long as the
+    sign-in, so it is never the place to send someone later.
+    """
+    try:
+        parts = urlsplit(approval_url)
+    except ValueError:
+        return None
+    if parts.scheme != "https" or not parts.netloc:
+        return None
+    base = parts.path.split("/cli/login/", 1)[0].rstrip("/")
+    return f"https://{parts.netloc}{base}/"
+
+
+def no_agent_access_message(approval_url: str) -> str:
+    home = workbench_home(approval_url)
+    where = f"Workbench ({home})" if home else "Workbench"
+    return (
+        f"None of your workspaces has agent access yet. Request it in {where}: account menu, "
+        "Connect an agent, Request agent access. Run `nexus-workbench login` again once it's on."
+    )
+
+
+NO_WORKSPACE_MESSAGE = (
+    "You are not in a Workbench workspace yet. Workbench is invite-only: ask your workspace "
+    "admin for an invite, then run `nexus-workbench login` again."
+)
+DENIED_MESSAGE = (
+    "This sign-in was denied in the browser. Run `nexus-workbench login` to start again."
+)
+EXPIRED_MESSAGE = (
+    "This sign-in ran out of time or was cancelled. Run `nexus-workbench login` to start again."
+)
+
+
+def expired_while_blocked_message(reason: str, approval_url: str) -> str:
+    """The expiry sentence when the page was showing a "cannot approve" reason at the end."""
+    if reason == "no_agent_access":
+        home = workbench_home(approval_url)
+        where = f"Workbench ({home})" if home else "Workbench"
+        return (
+            "This sign-in ran out of time while the page said none of your workspaces has "
+            f"agent access yet. Request it in {where}: account menu, Connect an agent, "
+            "Request agent access. Run `nexus-workbench login` again once it's on."
+        )
+    return (
+        "This sign-in ran out of time while the page said you are not in a Workbench "
+        "workspace yet. Ask your workspace admin for an invite, then run "
+        "`nexus-workbench login` again."
+    )
 
 
 def normalize_code(raw: str) -> str:
@@ -104,10 +181,7 @@ def device_name() -> str:
 def sign_in_failure(exc: WorkbenchError) -> LoginFailed:
     """The sentence a person sees when the server refuses a sign-in step."""
     if isinstance(exc, LoginExpired):
-        return LoginFailed(
-            "This sign-in ran out of time or was cancelled. "
-            "Run `nexus-workbench login` to start again."
-        )
+        return LoginFailed(EXPIRED_MESSAGE)
     if isinstance(exc, Forbidden):
         return LoginFailed(
             "Workbench refused this sign-in: you may no longer be a member of that workspace, "
@@ -145,6 +219,7 @@ class LoginIO:
     prompt: Callable[[str], str] = lambda text: input(text)  # noqa: E731
     hidden_prompt: Callable[[str], str] = lambda text: getpass.getpass(text)  # noqa: E731
     open_browser: Callable[[str], Any] = lambda url: webbrowser.open(url)  # noqa: E731
+    sleep: Callable[[float], Any] = lambda seconds: time.sleep(seconds)  # noqa: E731
 
     def say(self, text: str = "") -> None:
         print(text, file=self.out)
@@ -274,7 +349,8 @@ def login_with_browser(
     # The URL is printed above, so a browser that does not open is not an error.
     with contextlib.suppress(Exception):
         io.open_browser(url)
-    io.say("After you approve, Workbench shows a code like ABCD-EFGH.")
+    io.say(APPROVE_PROMPT)
+    _wait_for_approval(client, io, session, url)
 
     local_retries = 0
     pending_replies = 0
@@ -348,6 +424,84 @@ def login_with_browser(
         scopes=data.get("scopes"),
         requested=requested,
     )
+
+
+def _blocked_message(reason: str | None, url: str) -> str | None:
+    """What a known "cannot approve" reason means, or None for no reason or an unknown one."""
+    if reason == "no_agent_access":
+        return no_agent_access_message(url)
+    if reason == "no_workspace":
+        return NO_WORKSPACE_MESSAGE
+    return None
+
+
+def _wait_for_approval(
+    client: WorkbenchClient, io: LoginIO, session: dict[str, Any], url: str
+) -> None:
+    """Poll ``status`` until the person approves, then return so the code can be typed.
+
+    A "cannot approve" reason (no workspace, none with agent access) is explained, again
+    only when it changes, and the wait goes on. The reason is advisory: it belongs to
+    whoever opened the page last, so it clears when the person switches accounts or someone
+    who can approve opens the link, and someone else opening the page must not end this
+    sign-in. Only approval, denial or the end of the session (10 minutes) stop the wait. A
+    server without ``status`` returns at once (the code prompt follows, as before), and so
+    do a few network failures in a row.
+    """
+    said_waiting = False
+    shown: str | None = None  # the last reason explained
+    showing: str | None = None  # the known reason the page shows now
+    network_failures = 0
+
+    def expired() -> LoginFailed:
+        if showing is not None:
+            return LoginFailed(expired_while_blocked_message(showing, url))
+        return LoginFailed(EXPIRED_MESSAGE)
+
+    try:
+        for _ in range(MAX_POLLS):
+            try:
+                state = client.cli_login_status(
+                    session_id=session["sessionId"], poll_secret=session["pollSecret"]
+                )
+            except (InvalidArgument, LoginNotAvailable, UnexpectedResponse):
+                return  # an older server: ask for the code straight away
+            except NetworkError:
+                network_failures += 1
+                if network_failures >= MAX_STATUS_NETWORK_FAILURES:
+                    print(STATUS_UNREACHABLE_NOTE, file=io.err)
+                    return
+                io.sleep(min(POLL_INTERVAL * 2**network_failures, MAX_NETWORK_BACKOFF))
+                continue
+            except LoginExpired:
+                raise expired() from None
+            except WorkbenchError as exc:
+                raise sign_in_failure(exc) from None
+            network_failures = 0
+            status, reason = state["status"], state["reason"]
+            if status == "approved":
+                if said_waiting:
+                    io.say("Approved.")
+                return
+            if status == "denied":
+                raise LoginFailed(DENIED_MESSAGE)
+            if status in ("expired", "used"):
+                raise expired()
+            message = _blocked_message(reason, url) if status == "pending" else None
+            showing = reason if message is not None else None
+            if message is not None and reason != shown:
+                shown = reason
+                io.say(message)
+                io.say(STILL_WAITING_NOTE)
+                said_waiting = True
+            if not said_waiting:
+                io.say(WAITING_MESSAGE)
+                said_waiting = True
+            io.sleep(POLL_INTERVAL)
+    except KeyboardInterrupt:
+        io.say()
+        raise LoginCancelled(CANCELLED_MESSAGE) from None
+    raise expired()
 
 
 def run_login(

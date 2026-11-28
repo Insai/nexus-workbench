@@ -17,6 +17,20 @@ All notable changes to this package are listed here. The format follows
 - The `channels:write` scope (a write scope: `nexus-workbench login --scope channels:write`).
   A token without it gets `scope_required` with the exact `login` command.
 
+### Changed
+
+- `nexus-workbench login` waits for you to approve in the browser, then asks for the code.
+  When the page says none of your workspaces has agent access yet, or you are not in a
+  workspace yet, it explains (again only if the reason changes) and keeps waiting until
+  approval, denial or expiry, so you can switch browser accounts or pass the link to someone
+  who can approve. The reason is advisory: it comes from whoever opened the page last, so
+  someone else opening the link cannot end your sign-in. A denial and an expiry are told
+  apart by design. If the 10-minute sign-in runs out while a reason is showing, it exits 1
+  instead of waiting at `Code:`, and tells you where in Workbench to request access (a page
+  that does not expire, not the approval link). A network blip while waiting is retried with backoff; after a few in
+  a row, or on a Workbench without this check (contract section 5.1, `status`), you get the
+  code prompt, as before.
+
 ## [0.2.1] - 2026-11-24
 
 Small changes that help an agent on its first try.

@@ -371,6 +371,42 @@ A wrong `pollSecret` gives `login_expired` and does not use up an attempt.
 - Too many failed `exchange` calls from one address return 429
   `rate_limited`.
 
+`{"action": "status", "sessionId": "…", "pollSecret": "…"}`
+
+```json
+{"status": "pending", "reason": "no_agent_access"}
+```
+
+Where the sign-in stands, for the terminal that started it, so it can wait for
+the approval and then ask for the code. `status` is one of `pending`,
+`approved`, `denied`, `expired` or `used`. `reason` appears only while
+`pending`, after the person opened the approval page and cannot approve:
+`no_workspace` (they belong to no open workspace) or `no_agent_access` (none
+of their workspaces has agent access). It goes away when a later page load
+finds a workspace with access. A client may meet other reasons later and
+should keep waiting on one it does not know.
+
+The reason is advisory: it belongs to whoever opened the page last, so it
+can clear when the person switches browser accounts or someone who can approve
+opens the link, and anyone with the link can set it by opening the page. A
+client should explain it (again only when it changes) and keep waiting. It
+must not end the sign-in on a reason, however long it lasts, or someone else
+opening the page could keep the right person from signing in. Only `approved`,
+`denied`, `expired`, `used` or a 410 end the wait. `denied` and `expired` are
+distinct by design: a denial is a decision someone made on the page, expiry is
+the session running out (10 minutes). When the sign-in ends while a reason
+shows, the client repeats where to request agent access. A message that
+tells the person where to request agent access names the Workbench app, never
+the approval URL, which expires with the sign-in. A network failure while
+polling is not a refusal: back off and try again, and after a few in a row
+ask for the code as a server without `status` would.
+
+- A wrong `pollSecret`, or an unknown session, returns 410 `login_expired`
+  and counts as a failed call from the address, like a failed `exchange`.
+- A server from before `status` answers 400 `invalid_argument`. A client
+  then asks for the code straight away.
+- Poll no more often than every 2 seconds.
+
 ### 5.2 Callable `workbench_cli_login_review` (signed-in person)
 
 | Action | Arguments | Returns |
